@@ -42,16 +42,27 @@ public class VideoController {
 
     @PostMapping("/plugins/bilibili-player/api/player/log")
     public Mono<Void> receivePlayerLog(@RequestBody Map<String, Object> body) {
-        return Mono.fromRunnable(() -> {
-            try {
-                String event = (String) body.getOrDefault("event", "unknown");
-                String bvid = (String) body.getOrDefault("bvid", "");
-                String cid = (String) body.getOrDefault("cid", "");
-                Object detail = body.get("detail");
-                String prefix = bvid.isEmpty() ? "" : "[" + bvid.substring(0, Math.min(bvid.length(), 12)) + "] ";
-                logService.debug(prefix + "PLAYER " + event + " " + (detail != null ? detail : ""));
-            } catch (Exception ignored) {}
-        });
+        return Mono.fromRunnable(() -> logTelemetry(body));
+    }
+
+    @GetMapping("/plugins/bilibili-player/api/player/log")
+    public Mono<Void> receivePlayerLogGet(
+            @RequestParam String event,
+            @RequestParam(defaultValue = "") String bvid,
+            @RequestParam(defaultValue = "") String cid,
+            @RequestParam(defaultValue = "") String detail) {
+        Map<String, Object> body = Map.of("event", event, "bvid", bvid, "cid", cid, "detail", detail);
+        return Mono.fromRunnable(() -> logTelemetry(body));
+    }
+
+    private void logTelemetry(Map<String, Object> body) {
+        try {
+            String event = (String) body.getOrDefault("event", "unknown");
+            String bvid = (String) body.getOrDefault("bvid", "");
+            String detail = body.getOrDefault("detail", "").toString();
+            String prefix = bvid.isEmpty() ? "" : "[" + bvid.substring(0, Math.min(bvid.length(), 12)) + "] ";
+            logService.debug(prefix + "PLAYER " + event + " " + (detail.isEmpty() ? "" : detail));
+        } catch (Exception ignored) {}
     }
 
     @GetMapping("/plugins/bilibili-player/api/video/playurl")
@@ -166,7 +177,7 @@ public class VideoController {
             html.append("var API='/plugins/bilibili-player/api';var BVID='").append(bvid).append("';var CID='").append(cid).append("';");
             html.append("var v=document.getElementById('player'),ld=document.getElementById('loading'),lt=document.getElementById('loadText'),er=document.getElementById('error'),qm=document.getElementById('qualityMenu'),bi=document.getElementById('bufInfo'),cq=0,aq=[],ad=[],ms=null,vs=null,as=null,vS=[],aS=[];");
             html.append("function hL(){ld.style.display='none'}function sE(m){er.style.display='flex';er.textContent=m;ld.style.display='none'}function px(u){return API+'/video/proxy?url='+encodeURIComponent(u)}function bM(m,c){return m.split(';')[0]+';codecs=\"'+c+'\"'}");
-            html.append("function tL(e,d){try{navigator.sendBeacon(API+'/player/log',JSON.stringify({event:e,bvid:BVID,cid:CID,detail:d,ts:Date.now()}))}catch(x){}}");
+            html.append("function tL(e,d){var u=API+'/player/log?event='+encodeURIComponent(e)+'&bvid='+BVID+'&cid='+CID+'&detail='+encodeURIComponent(d||'');fetch(u,{keepalive:true,mode:'no-cors'}).catch(function(){})}");
             html.append("function aB(sb,buf){return new Promise(function(rs){function da(){if(!sb){rs();return}if(sb.updating){sb.addEventListener('updateend',function x(){sb.removeEventListener('updateend',x);da()});return}sb.addEventListener('updateend',function x(){sb.removeEventListener('updateend',x);rs()});try{sb.appendBuffer(buf)}catch(e){rs()}}da()})};");
             html.append("var firstPlay=true;");
             html.append("v.addEventListener('play',function(){if(firstPlay){firstPlay=false;hL();v.muted=false;}tL('play','time='+v.currentTime.toFixed(1))});");
