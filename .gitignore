@@ -1,0 +1,34 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Build
+out/
+target/
+dist/
+
+# UI
+node_modules/
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build output
+bin/
+
+# Halo devtools working directory
+workplace/
+
+# Logs
+*.log

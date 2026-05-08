@@ -1,0 +1,19 @@
+apiVersion: plugin.halo.run/v1alpha1
+kind: Plugin
+metadata:
+  name: bilibili-player
+spec:
+  enabled: true
+  requires: ">=2.24.0"
+  author:
+    name: halo-dev
+    website: https://github.com/halo-dev
+  logo: https://www.bilibili.com/favicon.ico
+  homepage: https://github.com/halo-dev/plugin-bilibili-player#readme
+  repo: https://github.com/halo-dev/plugin-bilibili-player
+  issues: https://github.com/halo-dev/plugin-bilibili-player/issues
+  displayName: "BiliBili播放器"
+  description: "在Halo博客中嵌入BiliBili视频播放器，支持扫码登录获取高清晰度视频、DASH音画分离播放、多清晰度切换"
+  license:
+    - name: "GPL-3.0"
+      url: "https://github.com/halo-dev/plugin-bilibili-player/blob/main/LICENSE"
