@@ -6,6 +6,7 @@ import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.*;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,7 +32,7 @@ public class VideoController {
         this.bilibiliApiService = bilibiliApiService;
         this.logService = logService;
         this.proxyClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
+                .connectTimeout(Duration.ofSeconds(30))
                 .build();
     }
 
@@ -79,16 +80,25 @@ public class VideoController {
     @GetMapping("/plugins/bilibili-player/api/video/proxy")
     public Mono<ResponseEntity<Flux<DataBuffer>>> proxyVideo(
             @RequestParam String url,
-            @RequestParam(required = false) String range
+            ServerHttpRequest serverRequest
     ) {
         return Mono.fromCallable(() -> {
+            URI uri;
+            try {
+                uri = URI.create(url);
+            } catch (Exception e) {
+                logService.debug("Invalid proxy URI: " + url.substring(0, Math.min(url.length(), 100)));
+                return ResponseEntity.status(400).body(Flux.<DataBuffer>empty());
+            }
+
             HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
+                    .uri(uri)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .header("Referer", "https://www.bilibili.com")
                     .header("Origin", "https://www.bilibili.com")
                     .timeout(Duration.ofSeconds(60));
 
+            String range = serverRequest.getHeaders().getFirst("Range");
             if (range != null && !range.isEmpty()) {
                 reqBuilder.header("Range", range);
             }
@@ -113,7 +123,7 @@ public class VideoController {
             headers.set("Access-Control-Allow-Origin", "*");
             headers.set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length");
 
-            if (status >= 300) return ResponseEntity.status(status).headers(headers).body(Flux.empty());
+            if (status >= 300) return ResponseEntity.status(status).headers(headers).body(Flux.<DataBuffer>empty());
 
             InputStream inputStream = response.body();
             Flux<DataBuffer> flux = Flux.generate(
@@ -137,6 +147,9 @@ public class VideoController {
                 stream -> { try { stream.close(); } catch (Exception ignored) {} }
             );
             return ResponseEntity.status(status).headers(headers).body(flux);
+        }).onErrorResume(e -> {
+            logService.debug("Proxy error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            return Mono.just(ResponseEntity.status(500).body(Flux.<DataBuffer>empty()));
         });
     }
 
@@ -146,52 +159,89 @@ public class VideoController {
             StringBuilder h = new StringBuilder();
             h.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">");
             h.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-            h.append("<title>Bilibili Player</title><style>");
+            h.append("<meta http-equiv=\"Cache-Control\" content=\"no-cache,no-store,must-revalidate\">");
+            h.append("<title>Bilibili Player</title>");
+            h.append("<link href=\"https://vjs.zencdn.net/8.23.4/video-js.css\" rel=\"stylesheet\"/>");
+            h.append("<style>");
             h.append("*{margin:0;padding:0;box-sizing:border-box}");
-            h.append("body{background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}");
-            h.append("#ct{position:relative;width:100%;max-width:100%}video{width:100%;display:block}");
-            h.append(".ld{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;gap:12px;z-index:5}");
-            h.append(".sp{width:32px;height:32px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:sp .8s linear infinite}");
-            h.append("@keyframes sp{to{transform:rotate(360deg)}}");
-            h.append(".er{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#f87171;background:rgba(0,0,0,.85);z-index:5;text-align:center;padding:20px}");
-            h.append(".qb{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:flex-end;padding:8px 12px;z-index:10;background:linear-gradient(transparent,rgba(0,0,0,.7))}");
-            h.append(".qs{position:relative}.qbtn{display:flex;align-items:center;gap:4px;padding:4px 8px;font-size:12px;color:#fff;background:rgba(255,255,255,.1);border:none;border-radius:4px;cursor:pointer}");
-            h.append(".qbtn:hover{background:rgba(255,255,255,.2)}");
-            h.append(".qm{position:absolute;bottom:100%;right:0;margin-bottom:8px;background:rgba(0,0,0,.9);border:1px solid rgba(255,255,255,.15);border-radius:6px;overflow:hidden;display:none;min-width:110px;max-height:200px;overflow-y:auto}");
-            h.append(".qm.s{display:block}.qi{padding:8px 14px;font-size:13px;color:#fff;cursor:pointer;white-space:nowrap}.qi:hover{background:rgba(255,255,255,.1)}.qi.ac{color:#00a1d6;background:rgba(0,161,214,.15)}");
-            h.append("</style></head><body><div id=\"ct\">");
-            h.append("<div id=\"ld\" class=\"ld\"><div class=\"sp\"></div><span id=\"lt\">Loading...</span></div>");
-            h.append("<div id=\"er\" class=\"er\" style=\"display:none\"></div>");
-            h.append("<video id=\"v\" controls autoplay muted playsinline crossorigin=\"anonymous\"></video>");
-            h.append("<div class=\"qb\">");
-            h.append("<span id=\"bi\" style=\"color:#888;font-size:10px;margin-right:auto\"></span>");
-            h.append("<div class=\"qs\"><button id=\"qbtn\" class=\"qbtn\" onclick=\"tq()\">Quality</button><div id=\"qm\" class=\"qm\"></div></div>");
-            h.append("</div></div><script>");
-            h.append("var A='/plugins/bilibili-player/api';var B='").append(bvid).append("';var C='").append(cid).append("';");
-            h.append("var v=document.getElementById('v'),ld=document.getElementById('ld'),lt=document.getElementById('lt'),er=document.getElementById('er'),qm=document.getElementById('qm'),bi=document.getElementById('bi'),cq=0,aq=[],ad=[],ms=null,vs=null,as=null,vS=[],aS=[];");
-            h.append("function hl(){ld.style.display='none'}function se(m){er.style.display='flex';er.textContent=m;ld.style.display='none'}");
-            h.append("function pu(u){return A+'/video/proxy?url='+encodeURIComponent(u)}");
-            h.append("function bm(m,c){return m.split(';')[0]+';codecs=\"'+c+'\"'}");
-            h.append("function tl(e,d){var u=A+'/player/log?event='+encodeURIComponent(e)+'&bvid='+B+'&cid='+C+'&detail='+encodeURIComponent(d||'');fetch(u,{keepalive:true,mode:'no-cors'}).catch(function(){})}");
-            h.append("function ab(sb,buf){return new Promise(function(rs){function da(){if(!sb){rs();return}if(sb.updating){sb.addEventListener('updateend',function x(){sb.removeEventListener('updateend',x);da()});return}sb.addEventListener('updateend',function x(){sb.removeEventListener('updateend',x);rs()});try{sb.appendBuffer(buf)}catch(e){rs()}}da()})};");
-            h.append("var firstPlay=true;v.addEventListener('play',function(){if(firstPlay){firstPlay=false;v.muted=false;}tl('play','t='+v.currentTime.toFixed(1))});");
-            h.append("v.addEventListener('pause',function(){tl('pause','t='+v.currentTime.toFixed(1))});");
-            h.append("v.addEventListener('seeked',function(){tl('seeked','t='+v.currentTime.toFixed(1))});");
-            h.append("v.addEventListener('ended',function(){tl('ended','')});");
-            h.append("v.addEventListener('error',function(){tl('error','c='+(v.error?v.error.code:'?'))});");
-            h.append("v.addEventListener('waiting',function(){var t0=v.currentTime;tl('stall','t='+t0.toFixed(1));var tr=setTimeout(function(){tl('recover','timer');v.play().catch(function(){})},2000);v.addEventListener('canplay',function x(){tl('recover','canplay');clearTimeout(tr);v.removeEventListener('canplay',x);v.play().catch(function(){});},{once:true})});");
-            h.append("async function lv(qn){tl('load','qn='+qn);ld.style.display='flex';er.style.display='none';rm();lt.textContent='Connecting...';try{var r=await fetch(A+'/video/playurl?bvid='+B+'&cid='+C+'&qn='+(qn||64)+'&fnval=80');var d=await r.json();cq=d.quality;aq=d.acceptQuality;ad=d.acceptDescription;bq();if(d.dash){vS=d.dash.video;aS=d.dash.audio;tl('dash','v='+vS.length+' a='+aS.length);id()}else if(d.durl&&d.durl.length>0){tl('flv','');v.src=pu(d.durl[0].url);hl()}else{se('No stream')}}catch(e){se(e.message);tl('loadErr',e.message)}}");
-            h.append("function rm(){[vs,as].forEach(function(x){try{x.abort()}catch(e){}});if(ms){var sb_=ms.sourceBuffers;try{if(ms.readyState!=='closed')while(sb_.length>0)ms.removeSourceBuffer(sb_[0])}catch(e){}}if(v.src&&v.src.startsWith('blob'))URL.revokeObjectURL(v.src);vs=null;as=null;ms=null;firstPlay=true}");
-            h.append("var fst=true;");
-            h.append("async function st0(sb,url,cb){var r=await fetch(pu(url));var rd=r.body.getReader();var cs=[],total=0;while(true){var q=await rd.read();if(q.done)break;var c=new Uint8Array(q.value.buffer);total+=c.length;cs.push(c);if(total>=2097152&&fst){fst=false;ab(sb,mg(cs)).then(function(){return fl()}).then(function(){v.play().catch(function(){});hl();tl(\"playing\",\"\"+total/1048576|0+\"MB\")});cs=[]}else if(cs.length>=8){await ab(sb,mg(cs));cs=[]}}if(cs.length)await ab(sb,mg(cs));cb()}");
-            h.append("function mg(cs){var t=0;for(var i=0;i<cs.length;i++)t+=cs[i].length;var m=new Uint8Array(t),p=0;for(var i=0;i<cs.length;i++){m.set(cs[i],p);p+=cs[i].length}return m}");
-            h.append("function fl(){return new Promise(function(rs){function tk(){if(!vs&&!as)rs();else if((!vs||!vs.updating)&&(!as||!as.updating))rs();else setTimeout(tk,30)}tk()})}");
-            h.append("function id(){ms=new MediaSource();v.src=URL.createObjectURL(ms);ms.addEventListener('sourceopen',async function so(){try{tl('so','');var vi=vS[0],ai=aS[0];for(var i=0;i<aS.length;i++)if(aS[i].bandwidth>ai.bandwidth)ai=aS[i];vs=ms.addSourceBuffer(bm(vi.mimeType,vi.codecs));as=ms.addSourceBuffer(bm(ai.mimeType,ai.codecs));fst=true;var vd=false,ad=false;st0(vs,vi.baseUrl,function(){vd=true;ck()});st0(as,ai.baseUrl,function(){ad=true;ck()});function ck(){if(vd&&ad)fl().then(function(){if(ms.readyState==='open'){ms.endOfStream();tl('done','');bi.textContent='Done'}})}catch(e){se(e.message);tl('soErr',e.message)}},{once:true});}");
-            h.append("function sq(qn){lv(qn)}");
-            h.append("function bq(){var h='';for(var i=0;i<aq.length;i++)h+='<div class=\"qi'+(aq[i]===cq?' ac':'')+'\" onclick=\"sq('+aq[i]+')\">'+ad[i]+'</div>';qm.innerHTML=h}");
-            h.append("function tq(){qm.classList.toggle('s')}");
-            h.append("document.addEventListener('click',function(e){if(!e.target.closest('.qs'))qm.classList.remove('s')});");
-            h.append("lv(64);</script></body></html>");
+            h.append("html,body{height:100%}body{background:#000;display:flex;flex-direction:column;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}");
+            h.append(".qbar{display:flex;align-items:center;padding:0 12px;height:36px;background:rgba(0,0,0,.85);flex-shrink:0;z-index:20}");
+            h.append(".qbar .qlabel{font-size:12px;color:#888;margin-right:8px}");
+            h.append(".qselect{position:relative}");
+            h.append(".qsbtn{display:flex;align-items:center;gap:4px;padding:4px 10px;font-size:12px;color:#fff;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:4px;cursor:pointer;font-family:inherit}");
+            h.append(".qsbtn:hover{background:rgba(255,255,255,.15)}");
+            h.append(".qsbtn .arr{font-size:10px;color:#888;transition:transform .2s}");
+            h.append(".qsbtn.open .arr{transform:rotate(180deg)}");
+            h.append(".qmenu{position:absolute;top:100%;left:0;margin-top:4px;background:rgba(0,0,0,.95);border:1px solid rgba(255,255,255,.12);border-radius:6px;overflow:hidden;display:none;min-width:100px;z-index:30}");
+            h.append(".qmenu.show{display:block}");
+            h.append(".qmi{padding:8px 16px;font-size:13px;color:#ccc;cursor:pointer;white-space:nowrap}");
+            h.append(".qmi:hover{background:rgba(255,255,255,.1);color:#fff}");
+            h.append(".qmi.ac{color:#00a1d6}");
+            h.append(".pwrap{flex:1;position:relative;width:100%;min-height:0;max-width:100%;margin:0 auto;aspect-ratio:16/9}");
+            h.append(".pwrap .video-js{width:100%;height:100%}");
+            h.append(".video-js .vjs-control-bar{background:linear-gradient(0deg,rgba(0,0,0,.7),transparent);height:48px}");
+            h.append(".video-js .vjs-button>.vjs-icon-placeholder:before{line-height:48px}");
+            h.append(".video-js .vjs-time-control{line-height:48px}");
+            h.append(".video-js .vjs-progress-control{position:absolute;top:-.7em;width:100%;height:0;z-index:1;padding:10px 0}");
+            h.append(".video-js .vjs-progress-holder{position:absolute;margin:0 .5em!important;width:calc(100% - 1em)}");
+            h.append(".video-js .vjs-play-progress{background-color:#00a1d6}");
+            h.append(".video-js .vjs-play-progress::before{color:#00a1d6;font-size:1em}");
+            h.append(".video-js .vjs-load-progress div{background:rgba(255,255,255,.3)}");
+            h.append(".video-js .vjs-slider{background:rgba(255,255,255,.2)}");
+            h.append(".video-js .vjs-big-play-button{background:none;border:2px solid #fff;border-radius:50%;width:70px;height:70px;line-height:66px;font-size:30px;top:50%;left:50%;margin-top:-35px;margin-left:-35px}");
+            h.append(".video-js .vjs-volume-panel{order:2}.video-js .vjs-picture-in-picture-control{order:8}");
+            h.append(".vjs-error-disp{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#f87171;background:rgba(0,0,0,.85);z-index:5;text-align:center;padding:20px}");
+            h.append("</style></head><body>");
+            h.append("<div class=\"qbar\"><span class=\"qlabel\">Quality</span><div class=\"qselect\"><button id=\"qbtn\" class=\"qsbtn\">720P <span class=\"arr\">▾</span></button><div id=\"qmenu\" class=\"qmenu\"></div></div></div>");
+            h.append("<div class=\"pwrap\"><div class=\"vjs-error-disp\" id=\"er\"></div>");
+            h.append("<video id=\"v\" class=\"video-js vjs-default-skin\" controls autoplay muted playsinline></video></div>");
+            h.append("<script src=\"https://vjs.zencdn.net/8.23.4/video.min.js\"></script>");
+            h.append("<script>");
+            h.append("var API='/plugins/bilibili-player/api';var BVID='").append(bvid).append("';var CID='").append(cid).append("';");
+            h.append("var player=null,ps=null,cq=0,aq=[],ad=[],firstPlay=true,aEl=null,rafId=0,usingDash=false;");
+
+            // PlayerState for seamless quality switch
+            h.append("function PlayerState(){this.ongoing=false;this.switchTime=0;this.isPlaying=false}");
+            h.append("PlayerState.prototype.save=function(){if(this.ongoing&&player.currentTime()===0)return;this.ongoing=false;this.switchTime=player.currentTime();this.isPlaying=!player.paused()};");
+            h.append("PlayerState.prototype.apply=function(){player.currentTime(this.switchTime);if(this.isPlaying)player.play();this.ongoing=true};");
+            h.append("ps=new PlayerState();");
+
+            h.append("function tl(e,d){var u=API+'/player/log?event='+encodeURIComponent(e)+'&bvid='+BVID+'&cid='+CID+'&detail='+encodeURIComponent(d||'');fetch(u,{keepalive:true,mode:'no-cors'}).catch(function(){})}");
+            h.append("function pu(u){return API+'/video/proxy?url='+encodeURIComponent(u)}");
+            h.append("function se(m){var er=document.getElementById('er');er.style.display='flex';er.textContent=m;try{player.addClass('vjs-error')}catch(e){}}");
+
+            // Destroy audio element + RAF loop
+            h.append("function destroyAudio(){if(rafId){cancelAnimationFrame(rafId);rafId=0}if(aEl){try{aEl.pause();aEl.removeAttribute('src');aEl.load();aEl.parentNode.removeChild(aEl)}catch(e){}aEl=null}usingDash=false}");
+
+            // DASH playback: video in <video>, audio in hidden <audio>, RAF-synced
+            h.append("function playDASH(vUrl,aUrl,codecs,w,h){destroyAudio();var vEl=player.el_.querySelector('video');vEl.src=pu(vUrl);player.load();aEl=document.createElement('audio');aEl.style.display='none';aEl.crossOrigin='anonymous';document.body.appendChild(aEl);aEl.src=pu(aUrl);aEl.load();aEl.volume=player.volume();player.play().catch(function(){});usingDash=true;tl('dash','v='+codecs.v+' a='+codecs.a+' '+w+'x'+h);if(w&&h){var ar=h>w?(w+'/'+h):(w+'/'+h);document.querySelector('.pwrap').style.aspectRatio=ar};syncLoop()}");
+
+            // RAF-based audio sync loop: follow video time with ±100ms tolerance, handle play/pause/seek
+            h.append("function syncLoop(){if(rafId)cancelAnimationFrame(rafId);rafId=requestAnimationFrame(function tick(){rafId=requestAnimationFrame(tick);if(!aEl||!usingDash)return;var v=player.el_.querySelector('video');if(!v)return;var dt=v.currentTime-aEl.currentTime;if(Math.abs(dt)>0.15){if(!aEl.paused)aEl.currentTime=v.currentTime}if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused){aEl.play().catch(function(){})}aEl.volume=v.muted?0:player.volume();aEl.playbackRate=v.playbackRate})}");
+
+            // Set up video-level event hooks for audio sync
+            h.append("function wireAudioHooks(){var v=player.el_.querySelector('video');v.addEventListener('seeked',function(){if(aEl)aEl.currentTime=v.currentTime});v.addEventListener('ratechange',function(){if(aEl)aEl.playbackRate=v.playbackRate});v.addEventListener('volumechange',function(){if(aEl)aEl.volume=v.muted?0:player.volume()})}");
+
+            // Direct MP4 playback (≤720P, already muxed)
+            h.append("function playDirect(url){destroyAudio();var u=pu(url);tl('direct',url.substring(0,60));player.el_.querySelector('video').src=u;player.load();player.play().catch(function(){})}");
+
+            // Load quality: QN≥80 → DASH dual-element, QN<80 → muxed MP4
+            h.append("async function loadQuality(qn){tl('load','qn='+qn);try{var fnval=qn>=80?16:1;var r=await fetch(API+'/video/playurl?bvid='+BVID+'&cid='+CID+'&qn='+(qn||64)+'&fnval='+fnval);var d=await r.json();cq=d.quality;aq=d.acceptQuality;ad=d.acceptDescription;updateResMenu();if(d.dash&&d.dash.video&&d.dash.video.length&&d.dash.audio&&d.dash.audio.length){var vT=d.dash.video,aT=d.dash.audio,vTr=vT[0],aTr=aT[0],i,altV=null;for(i=0;i<vT.length;i++){if(vT[i].id===d.quality){if(!vTr||vT[i].codecs.indexOf('avc1')!==-1)vTr=vT[i];else altV=vT[i]}}if(!vTr)vTr=altV||vT[0];for(i=0;i<aT.length;i++)if(aT[i].bandwidth>aTr.bandwidth)aTr=aT[i];playDASH(vTr.baseUrl,aTr.baseUrl,{v:vTr.codecs,a:aTr.codecs},vTr.width,vTr.height)}else if(d.durl&&d.durl.length>0){playDirect(d.durl[0].url)}else{se('No stream')}}catch(e){se(e.message);tl('loadErr',e.message)}}");
+
+            // Quality menu outside video bar
+            h.append("function updateResMenu(){var m=document.getElementById('qmenu');var b=document.getElementById('qbtn');if(!aq.length)return;m.innerHTML='';b.childNodes[0].textContent=ad[0]||'720P';for(var i=0;i<aq.length;i++){(function(qn,desc){var d=document.createElement('div');d.className='qmi'+(aq[i]===cq?' ac':'');d.textContent=desc;d.addEventListener('click',function(e){e.stopPropagation();m.classList.remove('show');b.classList.remove('open');ps.save();loadQuality(qn);ps.apply()});m.appendChild(d)})(aq[i],ad[i])}}");
+            h.append("document.getElementById('qbtn').addEventListener('click',function(e){e.stopPropagation();var m=document.getElementById('qmenu');var b=this;b.classList.toggle('open');m.classList.toggle('show')});");
+            h.append("document.addEventListener('click',function(e){var qs=document.querySelector('.qselect');if(!qs.contains(e.target)){document.getElementById('qmenu').classList.remove('show');document.getElementById('qbtn').classList.remove('open')}});");
+
+            // Video.js event wiring
+            h.append("function videoEvents(){var v=player.el_.querySelector('video');v.addEventListener('play',function(){if(firstPlay){firstPlay=false;v.muted=false}tl('play','t='+player.currentTime().toFixed(1))});v.addEventListener('pause',function(){tl('pause','t='+player.currentTime().toFixed(1))});v.addEventListener('seeked',function(){tl('seeked','t='+player.currentTime().toFixed(1))});v.addEventListener('ended',function(){tl('ended','')});v.addEventListener('error',function(){tl('error','c='+(v.error?v.error.code:'?'))});v.addEventListener('waiting',function(){var t0=player.currentTime();tl('stall','t='+t0.toFixed(1));setTimeout(function(){tl('recover','timer');if(v.paused)return;player.play().catch(function(){})},2000);v.addEventListener('canplay',function x(){tl('recover','canplay');v.removeEventListener('canplay',x);if(!v.paused)player.play().catch(function(){})},{once:true})})};");
+
+            // Video.js init — default to 1080P if logged in, 720P otherwise
+            h.append("player=videojs('v',{controls:true,preload:'auto',fluid:true,autoplay:true,muted:true,controlBar:{children:['playToggle','volumePanel','currentTimeDisplay','timeDivider','durationDisplay','progressControl','pictureInPictureToggle','fullscreenToggle']}});");
+            h.append("player.addClass('vjs-bilibili-theme');");
+            h.append("videoEvents();wireAudioHooks();");
+            h.append("player.ready(function(){tl('ready','');loadQuality(80)});");
+            h.append("</script></body></html>");
             return ResponseEntity.ok().cacheControl(CacheControl.noCache()).body(h.toString());
         });
     }

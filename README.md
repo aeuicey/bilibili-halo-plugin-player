@@ -1,18 +1,22 @@
 # BiliBili Halo Plugin Player
 
-为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音画分离播放、多清晰度动态切换。
+[![Build](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml/badge.svg)](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml)
+
+为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例。
 
 ## 功能特性
 
 - **扫码登录** — 在插件管理后台生成 B站 登录二维码，扫码授权后自动持久化登录状态
-- **多清晰度支持** — 获取 480P / 720P / 1080P 多档清晰度，登录后解锁更高画质
-- **DASH 播放** — 基于 Media Source Extensions 在浏览器端合成音画分离的视频流，无需转码
+- **多清晰度支持** — 360P / 480P / 720P / 1080P / 1080P60 / 4K，登录后解锁更高画质（需大会员）
+- **DASH 音画分离播放** — 视频 `<video>` + 隐藏 `<audio>` 双元素 `requestAnimationFrame` 毫秒级同步
+- **分辨率自适应** — 自动识别横屏(16:9)、竖屏(9:16)、方形视频，嵌入代码 + 播放器同步对应画幅比例
 - **后台管理** — 输入 BV 号即可生成嵌入代码，一键复制，粘贴到文章 HTML 编辑器即可使用
-- **实时日志** — 内置调试日志面板，SSE 实时推送后端请求日志，方便排查问题
+- **实时日志** — 内置调试日志面板，实时推送后端请求日志，方便排查问题
+- **GitHub Actions 自动构建** — 每次推送自动编译生成 JAR 包
 
 ## 安装
 
-1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 页面下载最新 JAR 包
+1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 或 [Actions](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml) 页面下载最新 JAR 包
 2. 进入 Halo 后台 → 插件管理 → 上传插件，选择下载的 JAR 文件
 3. 在已安装插件列表中找到 "BiliBili播放器"，确认已启用
 
@@ -32,14 +36,65 @@
 - 切换到"嵌入代码"标签页
 - 输入 B站视频链接或 BV 号，点击"解析"
 - 多 P 视频可选择对应分 P
+- 系统自动识别视频分辨率并显示横/竖屏标记
 - 点击"复制代码"，将 HTML 代码粘贴到文章编辑器的 HTML 视图中
 - 页面读者即可看到内嵌的 B站播放器
 
 ### 3. 读者端播放
 
-- 播放器自动加载最高可用清晰度
-- 点击右下角画质按钮可切换清晰度
-- 支持自适应宽高比，响应式布局
+- 播放器自动加载最高可用清晰度（默认 1080P，登录后）
+- 右下角画质按钮可切换清晰度
+- 横屏/竖屏视频自动匹配正确画幅比例
+- 支持完整 Video.js 控件（播放/暂停/进度/音量/画中画/全屏）
+
+## 技术路线
+
+### 音视频分离播放（DASH Dual Element Sync）
+
+B站 720P+ 视频采用 DASH 协议，音视频分离为独立 m4s 文件。本插件实现了一套**零外部依赖的音视频同步方案**：
+
+```
+B站 playurl API (fnval=16)
+  → dash.video[] (m4s)  → <video src="proxy">
+  → dash.audio[] (m4s)  → <audio style="display:none" src="proxy">
+                              ↑
+                    requestAnimationFrame
+                     每帧同步 播放/暂停/seek/音量/倍速
+```
+
+**为何不用 MSE / WebAV？**
+
+初期尝试了 `MediaSource` + `SourceBuffer` 手工推流，以及 `@webav/av-cliper` 的 `mixinMP4AndAudio` 合并方案。两者均因 Spring WebFlux 代理返回的 `ReadableStream` 不兼容浏览器原生 `pipeThrough` 接口而失败。
+
+**最终方案——Dual Element RAF Sync**，与 B站官方播放器思路一致（音画分离 + 客户端同步），但使用 `<video>` / `<audio>` 原生标签替代复杂的 MSE 管线：
+
+- `video` 元素加载视频轨 — 浏览器内置解码器，HEVC/AVC/AV1 自适应
+- `audio` 元素加载音频轨 — 隐藏 DOM，相同的代理 URL 路径
+- `requestAnimationFrame` 循环 — 每 16ms 校正一次音频时间，±150ms 容忍度
+- `seeked` / `ratechange` / `volumechange` 事件钩子 — 鼠标拖动进度条时间步响应
+
+### 清晰度策略
+
+| 清晰度 | qn | fnval | 返回格式 | 播放方式 |
+|--------|-----|-------|---------|---------|
+| 360P/480P/720P | 64 | 1 | durl MP4 直链 | 单一 `<video>` |
+| 1080P/4K+ | ≥80 | 16 | DASH 音视频分离 | 双元素 RAF 同步 |
+
+### 分辨率自适应
+
+- 嵌入代码：`aspect-ratio` 使用实际 `W/H` 而非硬编码 `16/9`
+- 播放器：`loadQuality` 后将轨道 `width/height` 注入 CSS 容器
+- 管理后台：分析视频后显示 `1920×1080 · Landscape` 或 `1080×1920 · Portrait`
+
+### 网络架构
+
+```
+浏览器 fetch
+  → /api/video/proxy?url=<Bilibili CDN>
+    → Spring WebFlux Flux<DataBuffer> streaming
+      → B站 CDN (Referer/Origin 伪装)
+        → 浏览器原生 <video>/<audio>
+```
 
 ## 开发
 
@@ -60,15 +115,9 @@ cd bilibili-halo-plugin-player
 | 层级 | 技术 |
 |------|------|
 | 后端 | Java 21 / Spring WebFlux / Halo Plugin API |
-| 前端 | Vue 3 + TypeScript / Vite |
+| 前端 | Vue 3 + TypeScript / Vite / Halo UI Components |
 | 构建 | Gradle / pnpm |
-
-### DASH 播放原理
-
-1. 调用 B站 `playurl` API 获取 DASH 格式的音视频流地址
-2. 通过服务端代理转发视频片段（绕过跨域限制）
-3. 浏览器端使用 `MediaSource` API 分别加载音视频 `SourceBuffer`
-4. 音视频流在客户端自动同步合成播放
+| CI/CD | GitHub Actions (JDK 21 + Node 20 + pnpm 10) |
 
 ## 开源协议
 
@@ -77,5 +126,5 @@ cd bilibili-halo-plugin-player
 感谢以下项目：
 - [Halo](https://github.com/halo-dev/halo) — 优秀的开源博客系统
 - [create-halo-plugin](https://github.com/halo-dev/create-halo-plugin) — Halo 插件模板
-- [EasyPlayer.js](https://github.com/EasyDarwin/EasyPlayer.js) — 播放器设计参考
+- [Video.js](https://videojs.com) — Web 播放器框架
 - [Bilibili API](https://api.bilibili.com/) — 视频信息与播放地址接口
