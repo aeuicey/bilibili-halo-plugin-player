@@ -4,6 +4,9 @@
 
 为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例。
 
+<img width="1357" height="1692" alt="image" src="https://github.com/user-attachments/assets/8ec6109b-2c2b-43c3-ae55-6bee598196aa" />
+
+
 ## 功能特性
 
 - **扫码登录** — 在插件管理后台生成 B站 登录二维码，扫码授权后自动持久化登录状态
