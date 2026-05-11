@@ -332,28 +332,73 @@ public class BilibiliApiService {
         }
 
         JsonNode data = root.get("data");
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("bvid", data.get("bvid").asText());
-        result.put("aid", data.get("aid").asLong());
-        result.put("title", data.get("title").asText());
-        result.put("pic", data.get("pic").asText());
-        result.put("duration", data.get("duration").asLong());
-        result.put("ownerName", data.get("owner").get("name").asText());
-        result.put("ownerFace", data.get("owner").get("face").asText());
+        Map<String, Object> result = buildVideoInfo(data);
 
+        log.info("视频信息获取成功: title={}, pages={}",
+                result.getOrDefault("title", ""),
+                ((List<?>) result.getOrDefault("pages", List.of())).size());
+        return objectMapper.writeValueAsString(result);
+    }
+
+    // 统一的 JsonNode 安全取值 -------------------------------------------------
+
+    private static String safeText(JsonNode node, String field) {
+        return node != null && node.hasNonNull(field) ? node.get(field).asText() : "";
+    }
+
+    private static long safeLong(JsonNode node, String field) {
+        return node != null && node.hasNonNull(field) ? node.get(field).asLong() : 0L;
+    }
+
+    private static int safeInt(JsonNode node, String field) {
+        return node != null && node.hasNonNull(field) ? node.get(field).asInt() : 0;
+    }
+
+    /** 组装对外返回的视频信息 Map。对缺失字段做安全兜底，防止 NPE。 */
+    private Map<String, Object> buildVideoInfo(JsonNode data) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("bvid", safeText(data, "bvid"));
+        result.put("aid", safeLong(data, "aid"));
+        result.put("title", safeText(data, "title"));
+        result.put("pic", safeText(data, "pic"));
+        result.put("duration", safeLong(data, "duration"));
+
+        JsonNode owner = data.get("owner");
+        result.put("ownerName", safeText(owner, "name"));
+        result.put("ownerFace", safeText(owner, "face"));
+
+        // 封面/视频原始尺寸，用于前端按原始比例渲染
+        JsonNode dim = data.get("dimension");
+        if (dim != null) {
+            result.put("picWidth", safeInt(dim, "width"));
+            result.put("picHeight", safeInt(dim, "height"));
+        }
+
+        // 视频互动统计数据
+        JsonNode stat = data.get("stat");
+        if (stat != null) {
+            Map<String, Object> statMap = new LinkedHashMap<>();
+            statMap.put("view", safeLong(stat, "view"));
+            statMap.put("danmaku", safeLong(stat, "danmaku"));
+            statMap.put("like", safeLong(stat, "like"));
+            result.put("stat", statMap);
+        }
+
+        // 分 P 列表
         List<Map<String, Object>> pages = new ArrayList<>();
-        for (JsonNode page : data.get("pages")) {
-            Map<String, Object> pageInfo = new LinkedHashMap<>();
-            pageInfo.put("cid", page.get("cid").asLong());
-            pageInfo.put("page", page.get("page").asInt());
-            pageInfo.put("part", page.get("part").asText());
-            pageInfo.put("duration", page.get("duration").asLong());
-            pages.add(pageInfo);
+        JsonNode pagesNode = data.get("pages");
+        if (pagesNode != null && pagesNode.isArray()) {
+            for (JsonNode page : pagesNode) {
+                Map<String, Object> pageInfo = new LinkedHashMap<>();
+                pageInfo.put("cid", safeLong(page, "cid"));
+                pageInfo.put("page", safeInt(page, "page"));
+                pageInfo.put("part", safeText(page, "part"));
+                pageInfo.put("duration", safeLong(page, "duration"));
+                pages.add(pageInfo);
+            }
         }
         result.put("pages", pages);
-
-        log.info("视频信息获取成功: title={}, pages={}", data.get("title").asText(), pages.size());
-        return objectMapper.writeValueAsString(result);
+        return result;
     }
 
     public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval) throws Exception {
