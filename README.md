@@ -122,6 +122,15 @@ cd bilibili-halo-plugin-player
 | 构建 | Gradle / pnpm |
 | CI/CD | GitHub Actions (JDK 21 + Node 20 + pnpm 10) |
 
+## 更新日志
+
+### v1.4.0 (2026-05-11)
+
+- **修复** 连续解析不同视频时 cid 被复用导致播放失败的问题
+- **修复** CDN 代理流传输中连接中断导致 EOFException 异常
+- **修复** 视频封面图 HTTP→HTTPS 重定向导致的缩略图加载失败，并优化封面图片尺寸
+- **优化** 管理后台顶栏设计，标题品牌化升级
+
 ## 开源协议
 
 本项目基于 [GNU General Public License v3.0](./LICENSE) 开源。
