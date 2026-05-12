@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -35,6 +36,16 @@ public class BilibiliApiService {
     private volatile String subKey;
     private volatile String sessdata;
     private volatile long lastKeyUpdateTime;
+
+    private static final long CACHE_TTL_MS = 10 * 60 * 1000;
+    private final ConcurrentHashMap<String, CacheEntry> playUrlCache = new ConcurrentHashMap<>();
+
+    private static class CacheEntry {
+        final String json;
+        final long expiresAt;
+        CacheEntry(String json, long expiresAt) { this.json = json; this.expiresAt = expiresAt; }
+        boolean isExpired() { return System.currentTimeMillis() > expiresAt; }
+    }
 
     public BilibiliApiService(LogService log) {
         this.log = log;
@@ -278,12 +289,14 @@ public class BilibiliApiService {
                 result.put("isLogin", false);
                 result.put("message", "会话已过期，请重新登录");
                 this.sessdata = null;
+                playUrlCache.clear();
             } else {
                 log.warn("nav API返回非0状态: code={}, message={}", code,
                         root.has("message") ? root.get("message").asText() : "无");
                 result.put("isLogin", false);
                 result.put("message", "会话已过期，请重新登录");
                 this.sessdata = null;
+                playUrlCache.clear();
             }
         } catch (Exception e) {
             log.error("验证登录状态异常: {}", e.getMessage());
@@ -297,6 +310,7 @@ public class BilibiliApiService {
     public String logout() throws Exception {
         log.info("用户退出登录, 清除SESSDATA");
         this.sessdata = null;
+        playUrlCache.clear();
         try {
             Files.deleteIfExists(DATA_DIR.resolve("sessdata"));
             log.info("已删除持久化的SESSDATA文件");
@@ -404,6 +418,16 @@ public class BilibiliApiService {
     public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval) throws Exception {
         log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}", bvid, cid, qn, fnval);
 
+        String cacheKey = bvid + ":" + cid + ":" + qn + ":" + fnval;
+        CacheEntry cached = playUrlCache.get(cacheKey);
+        if (cached != null) {
+            if (!cached.isExpired()) {
+                log.debug("playurl cache hit: {}", cacheKey);
+                return cached.json;
+            }
+            playUrlCache.remove(cacheKey);
+        }
+
         if (imgKey == null || subKey == null ||
                 System.currentTimeMillis() - lastKeyUpdateTime > 3600000) {
             log.info("刷新WBI签名密钥...");
@@ -443,7 +467,9 @@ public class BilibiliApiService {
 
         log.info("播放地址获取成功, quality={}, format={}",
                 root.get("data").get("quality").asInt(), root.get("data").get("format").asText());
-        return objectMapper.writeValueAsString(parsePlayUrlResponse(root.get("data")));
+        String jsonResult = objectMapper.writeValueAsString(parsePlayUrlResponse(root.get("data")));
+        playUrlCache.put(cacheKey, new CacheEntry(jsonResult, System.currentTimeMillis() + CACHE_TTL_MS));
+        return jsonResult;
     }
 
     private Map<String, Object> parsePlayUrlResponse(JsonNode data) {
@@ -474,9 +500,9 @@ public class BilibiliApiService {
             for (JsonNode v : dash.get("video")) {
                 Map<String, Object> vi = new LinkedHashMap<>();
                 vi.put("id", v.get("id").asInt());
-                vi.put("baseUrl", v.get("baseUrl").asText());
+                vi.put("baseUrl", CdnMirrorUtil.upgradeCdnHostname(v.get("baseUrl").asText()));
                 if (v.has("backupUrl") && !v.get("backupUrl").isNull()) {
-                    vi.put("backupUrl", v.get("backupUrl").get(0).asText());
+                    vi.put("backupUrl", CdnMirrorUtil.upgradeCdnHostname(v.get("backupUrl").get(0).asText()));
                 }
                 vi.put("bandwidth", v.get("bandwidth").asInt());
                 vi.put("mimeType", v.get("mimeType").asText());
@@ -497,9 +523,9 @@ public class BilibiliApiService {
             for (JsonNode a : dash.get("audio")) {
                 Map<String, Object> ai = new LinkedHashMap<>();
                 ai.put("id", a.get("id").asInt());
-                ai.put("baseUrl", a.get("baseUrl").asText());
+                ai.put("baseUrl", CdnMirrorUtil.upgradeCdnHostname(a.get("baseUrl").asText()));
                 if (a.has("backupUrl") && !a.get("backupUrl").isNull()) {
-                    ai.put("backupUrl", a.get("backupUrl").get(0).asText());
+                    ai.put("backupUrl", CdnMirrorUtil.upgradeCdnHostname(a.get("backupUrl").get(0).asText()));
                 }
                 ai.put("bandwidth", a.get("bandwidth").asInt());
                 ai.put("mimeType", a.get("mimeType").asText());
@@ -514,9 +540,9 @@ public class BilibiliApiService {
             List<Map<String, Object>> durlList = new ArrayList<>();
             for (JsonNode d : data.get("durl")) {
                 Map<String, Object> di = new LinkedHashMap<>();
-                di.put("url", d.get("url").asText());
+                di.put("url", CdnMirrorUtil.upgradeCdnHostname(d.get("url").asText()));
                 if (d.has("backup_url") && d.get("backup_url").size() > 0) {
-                    di.put("backupUrl", d.get("backup_url").get(0).asText());
+                    di.put("backupUrl", CdnMirrorUtil.upgradeCdnHostname(d.get("backup_url").get(0).asText()));
                 }
                 durlList.add(di);
             }
