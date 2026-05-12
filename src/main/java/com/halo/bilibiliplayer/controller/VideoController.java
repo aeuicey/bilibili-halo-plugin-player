@@ -10,6 +10,7 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -18,7 +19,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 @RestController
 public class VideoController {
@@ -96,10 +96,11 @@ public class VideoController {
             @RequestParam String bvid,
             @RequestParam long cid,
             @RequestParam(defaultValue = "64") int qn,
-            @RequestParam(defaultValue = "80") int fnval
+            @RequestParam(defaultValue = "80") int fnval,
+            @RequestParam(defaultValue = "0") int nocache
     ) {
         return Mono.fromCallable(() ->
-                bilibiliApiService.getVideoPlayUrl(bvid, String.valueOf(cid), qn, fnval))
+                bilibiliApiService.getVideoPlayUrl(bvid, String.valueOf(cid), qn, fnval, nocache == 1))
             .onErrorResume(e -> Mono.just(
                 "{\"acceptQuality\":[],\"acceptDescription\":[],\"quality\":0,\"error\":\""
                 + e.getMessage().replace("\"", "\\\"") + "\"}"
@@ -111,78 +112,80 @@ public class VideoController {
             @RequestParam String url,
             ServerHttpRequest serverRequest
     ) {
-        return Mono.fromCallable(() -> {
-            URI uri;
-            try {
-                uri = URI.create(url);
-            } catch (Exception e) {
-                logService.debug("Invalid proxy URI: " + url.substring(0, Math.min(url.length(), 100)));
-                return ResponseEntity.status(400).body(Flux.<DataBuffer>empty());
-            }
+        URI uri;
+        try {
+            uri = URI.create(url);
+        } catch (Exception e) {
+            logService.debug("Invalid proxy URI: " + url.substring(0, Math.min(url.length(), 100)));
+            return Mono.just(ResponseEntity.status(400).body(Flux.empty()));
+        }
 
-            HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
-                    .uri(uri)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .header("Referer", "https://www.bilibili.com")
-                    .header("Origin", "https://www.bilibili.com")
-                    .timeout(Duration.ofSeconds(60));
+        HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
+                .uri(uri)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("Referer", "https://www.bilibili.com")
+                .header("Origin", "https://www.bilibili.com")
+                .timeout(Duration.ofSeconds(60));
 
-            String range = serverRequest.getHeaders().getFirst("Range");
-            if (range != null && !range.isEmpty()) {
-                reqBuilder.header("Range", range);
-            }
+        String range = serverRequest.getHeaders().getFirst("Range");
+        if (range != null && !range.isEmpty()) {
+            reqBuilder.header("Range", range);
+        }
 
-            HttpRequest request = reqBuilder.GET().build();
-            CompletableFuture<HttpResponse<InputStream>> futureResp =
-                    proxyClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
-            HttpResponse<InputStream> response = futureResp.join();
-            int status = response.statusCode();
+        HttpRequest request = reqBuilder.GET().build();
 
-            HttpHeaders headers = new HttpHeaders();
-            if (status >= 200 && status < 300) {
-                response.headers().map().forEach((k, v) -> {
-                    String lk = k.toLowerCase();
-                    if (lk.equals("content-type") || lk.equals("content-length")
-                            || lk.equals("content-range") || lk.equals("accept-ranges")
-                            || lk.equals("content-disposition")) {
-                        headers.add(k, String.join(",", v));
+        Mono<ResponseEntity<Flux<DataBuffer>>> proxyResult = Mono.fromFuture(
+                proxyClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()))
+                .timeout(Duration.ofSeconds(30))
+                .flatMap(response -> {
+                    int status = response.statusCode();
+
+                    HttpHeaders headers = new HttpHeaders();
+                    if (status >= 200 && status < 300) {
+                        response.headers().map().forEach((k, v) -> {
+                            String lk = k.toLowerCase();
+                            if (lk.equals("content-type") || lk.equals("content-length")
+                                    || lk.equals("content-range") || lk.equals("accept-ranges")
+                                    || lk.equals("content-disposition")) {
+                                headers.add(k, String.join(",", v));
+                            }
+                        });
                     }
+                    headers.set("Access-Control-Allow-Origin", "*");
+                    headers.set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length");
+
+                    if (status >= 300) return Mono.just(ResponseEntity.status(status).headers(headers).body(Flux.empty()));
+
+                    InputStream inputStream = response.body();
+                    Flux<DataBuffer> flux = Flux.<DataBuffer, java.io.InputStream>generate(
+                        () -> inputStream,
+                        (stream, sink) -> {
+                            try {
+                                byte[] buf = new byte[65536];
+                                int n = stream.read(buf);
+                                if (n == -1) { stream.close(); sink.complete(); }
+                                else {
+                                    byte[] chunk = new byte[n];
+                                    System.arraycopy(buf, 0, chunk, 0, n);
+                                    sink.next(bufferFactory.wrap(chunk));
+                                }
+                            } catch (java.io.EOFException e) {
+                                try { stream.close(); } catch (Exception ignored) {}
+                                sink.complete();
+                            } catch (Exception e) {
+                                try { stream.close(); } catch (Exception ignored) {}
+                                sink.error(e);
+                            }
+                            return stream;
+                        },
+                        stream -> { try { stream.close(); } catch (Exception ignored) {} }
+                    ).subscribeOn(Schedulers.boundedElastic());
+                    return Mono.just(ResponseEntity.status(status).headers(headers).body(flux));
                 });
-            }
-            headers.set("Access-Control-Allow-Origin", "*");
-            headers.set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length");
 
-            if (status >= 300) return ResponseEntity.status(status).headers(headers).body(Flux.<DataBuffer>empty());
-
-            InputStream inputStream = response.body();
-            Flux<DataBuffer> flux = Flux.generate(
-                () -> inputStream,
-                (stream, sink) -> {
-                    try {
-                        byte[] buf = new byte[65536];
-                        int n = stream.read(buf);
-                        if (n == -1) { stream.close(); sink.complete(); }
-                        else {
-                            byte[] chunk = new byte[n];
-                            System.arraycopy(buf, 0, chunk, 0, n);
-                            sink.next(bufferFactory.wrap(chunk));
-                        }
-                    } catch (java.io.EOFException e) {
-                        // CDN dropped connection or client disconnected — complete normally
-                        try { stream.close(); } catch (Exception ignored) {}
-                        sink.complete();
-                    } catch (Exception e) {
-                        try { stream.close(); } catch (Exception ignored) {}
-                        sink.error(e);
-                    }
-                    return stream;
-                },
-                stream -> { try { stream.close(); } catch (Exception ignored) {} }
-            );
-            return ResponseEntity.status(status).headers(headers).body(flux);
-        }).onErrorResume(e -> {
+        return proxyResult.onErrorResume(e -> {
             logService.debug("Proxy error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-            return Mono.just(ResponseEntity.status(500).body(Flux.<DataBuffer>empty()));
+            return Mono.just(ResponseEntity.status(500).body(Flux.empty()));
         });
     }
 
@@ -264,15 +267,16 @@ public class VideoController {
             h.append(".vjs-bilibili-theme .vjs-big-play-button .vjs-icon-placeholder::before{line-height:66px}");
             h.append(".vjs-bilibili-theme .vjs-volume-panel{order:2}.vjs-bilibili-theme .vjs-picture-in-picture-control{order:8}");
             h.append(".vjs-error-disp{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#f87171;background:rgba(0,0,0,.85);z-index:5;text-align:center;padding:20px}");
+            h.append(".cdn-status{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:10;padding:6px 16px;background:rgba(251,114,153,.9);color:#fff;border-radius:999px;font-size:12px;font-weight:500;display:none;white-space:nowrap}");
             h.append("</style></head><body>");
-            h.append("<div class=\"qbar\"><span class=\"qlabel\">Quality</span><div class=\"qselect\"><button id=\"qbtn\" class=\"qsbtn\">720P <span class=\"arr\">▾</span></button><div id=\"qmenu\" class=\"qmenu\"></div></div><span id=\"bufinfo\" style=\"margin-left:auto;font-size:11px;color:#aaa;display:none;white-space:nowrap\"></span></div>");
-            h.append("<div class=\"pwrap\"><div class=\"vjs-error-disp\" id=\"er\"></div>");
+            h.append("<div class=\"qbar\"><span class=\"qlabel\">Quality</span><div class=\"qselect\"><button id=\"qbtn\" class=\"qsbtn\">720P <span class=\"arr\">▾</span></button><div id=\"qmenu\" class=\"qmenu\"></div></div><button id=\"refreshCdnBtn\" style=\"margin-left:8px;padding:4px 10px;font-size:12px;color:#fb7299;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:4px;cursor:pointer;font-family:inherit\" type=\"button\">🔄 刷新线路</button><span id=\"bufinfo\" style=\"margin-left:auto;font-size:11px;color:#aaa;display:none;white-space:nowrap\"></span></div>");
+            h.append("<div class=\"pwrap\"><span id=\"cdnStatus\" class=\"cdn-status\"></span><div class=\"vjs-error-disp\" id=\"er\"></div>");
             h.append("<video id=\"v\" class=\"video-js vjs-default-skin vjs-bilibili-theme\" controls autoplay muted playsinline></video>");
             h.append("<button id=\"unmuteBtn\" class=\"unmute-hint\" type=\"button\">🔊 点击解除静音</button></div>");
             h.append("<script src=\"https://vjs.zencdn.net/8.23.4/video.min.js\"></script>");
             h.append("<script>");
             h.append("var API='/plugins/bilibili-player/api';var BVID='").append(bvid).append("';var CID='").append(cid).append("';");
-            h.append("var player=null,ps=null,cq=0,aq=[],ad=[],firstPlay=true,aEl=null,rafId=0,usingDash=false,unmuteReq=false,preData=null,vLoadStart=0,aLoadStart=0;");
+            h.append("var player=null,ps=null,cq=0,aq=[],ad=[],firstPlay=true,aEl=null,rafId=0,usingDash=false,unmuteReq=false,preData=null,vLoadStart=0,aLoadStart=0,cdnStalls=0,cdnStallWindow=0,lastPauseTime=0,userPaused=false;");
             h.append("(function prefetchPlayurl(){fetch(API+'/video/playurl?bvid='+BVID+'&cid='+CID+'&qn=80&fnval=16').then(function(r){return r.text()}).then(function(t){if(t&&t.trim())preData=JSON.parse(t)}).catch(function(){})})();");
             h.append("function showBuffer(){var v=player&&player.el_?player.el_.querySelector('video'):null;var b=document.getElementById('bufinfo');if(!b)return;if(!v||!v.buffered||v.buffered.length===0){b.style.display='none';return}var pct=v.buffered.end(v.buffered.length-1)/v.duration*100;if(isNaN(pct)||pct<=0){b.style.display='none'}else if(pct>=99){b.style.display='none'}else{b.style.display='';b.textContent='缓冲 '+Math.round(pct)+'%'}}");
 
@@ -286,6 +290,7 @@ public class VideoController {
             h.append("function tl(e,d){var u=API+'/player/log?event='+encodeURIComponent(e)+'&bvid='+BVID+'&cid='+CID+'&detail='+encodeURIComponent(d||'')+'&page='+encodeURIComponent(getRefPage());fetch(u,{keepalive:true,mode:'no-cors'}).catch(function(){})}");
             h.append("function pu(u){return API+'/video/proxy?url='+encodeURIComponent(u)}");
             h.append("function se(m){var er=document.getElementById('er');er.style.display='flex';er.textContent=m;try{player.addClass('vjs-error')}catch(e){}}");
+            h.append("function refreshCdn(){if(cdnStalls&&cdnStalls<3)return;var st=document.getElementById('cdnStatus');st.style.display='block';st.textContent='正在优化线路...';var er=document.getElementById('er');fetch(API+'/video/playurl?bvid='+BVID+'&cid='+CID+'&qn='+cq+'&fnval=16&nocache=1').then(function(r){return r.text()}).then(function(t){if(!t||t.trim()==='')throw new Error('Empty');return JSON.parse(t)}).then(function(d){st.style.display='none';er.style.display='none';er.textContent='';player.removeClass('vjs-error');ps.save();if(d.dash&&d.dash.video&&d.dash.audio){var vT=d.dash.video,aT=d.dash.audio,vTr=vT[0],aTr=aT[0],i;for(i=0;i<vT.length;i++){if(vT[i].id===d.quality&&vT[i].codecs.indexOf('avc1')!==-1)vTr=vT[i]}for(i=0;i<aT.length;i++)if(aT[i].bandwidth>aTr.bandwidth)aTr=aT[i];playDASH(vTr.baseUrl,vTr.backupUrl||null,aTr.baseUrl,aTr.backupUrl||null,{v:vTr.codecs,a:aTr.codecs},vTr.width,vTr.height)}ps.apply();cdnStalls=0;cdnStallWindow=0;tl('cdnRefresh','ok')}).catch(function(e){st.style.display='none';er.style.display='flex';er.textContent='线路优化失败，请刷新页面';tl('cdnRefreshErr',e.message)})}");
 
             // Destroy audio element + RAF loop
             h.append("function destroyAudio(){if(rafId){cancelAnimationFrame(rafId);rafId=0}if(aEl){try{aEl.pause();aEl.removeAttribute('src');aEl.load();aEl.parentNode.removeChild(aEl)}catch(e){}aEl=null}usingDash=false}");
@@ -298,7 +303,7 @@ public class VideoController {
             h.append("function playDASH(vUrl,vUrlBak,aUrl,aUrlBak,codecs,w,h){destroyAudio();var vEl=player.el_.querySelector('video');try{vEl.pause()}catch(e){}vEl.removeAttribute('src');vEl.load();vEl.addEventListener('loadstart',function(){vLoadStart=Date.now()},{once:true});vEl.addEventListener('canplay',function(){var t=(Date.now()-vLoadStart)/1000;if(t>5)tl('cdnSlow','video:'+t.toFixed(1)+'s')},{once:true});vEl.src=pu(vUrl);vEl.load();aEl=document.createElement('audio');aEl.style.display='none';aEl.crossOrigin='anonymous';document.body.appendChild(aEl);aEl.addEventListener('loadstart',function(){aLoadStart=Date.now()},{once:true});aEl.addEventListener('canplay',function(){var t=(Date.now()-aLoadStart)/1000;if(t>5)tl('cdnSlow','audio:'+t.toFixed(1)+'s')},{once:true});aEl.src=pu(aUrl);aEl.load();aEl.muted=true;aEl.volume=player.volume();usingDash=true;tl('dash','v='+codecs.v+' a='+codecs.a+' '+w+'x'+h);if(vUrlBak){vEl.addEventListener('error',function onVErr(){vEl.removeEventListener('error',onVErr);tl('videoFallback','using backup video URL');vEl.src=pu(vUrlBak);vEl.load();if(!player.paused())vEl.play().catch(function(){})},{once:true})}if(aUrlBak){aEl.addEventListener('error',function onAErr(){aEl.removeEventListener('error',onAErr);tl('audioFallback','using backup audio URL');aEl.src=pu(aUrlBak);aEl.load();if(!player.paused())aEl.play().catch(function(){})},{once:true})}if(unmuteReq){aEl.muted=false;aEl.volume=player.volume();aEl.play().catch(function(){})}var started=false;function tryPlay(reason){if(started)return;started=true;var p=vEl.play();if(p&&typeof p.catch==='function')p.catch(function(err){if(err&&err.name==='AbortError')return;tl('playErr',err.name+':'+err.message);se('播放失败：'+err.message)});tl('playTrigger',reason)}vEl.addEventListener('canplay',function on1(){vEl.removeEventListener('canplay',on1);tryPlay('canplay')},{once:true});vEl.addEventListener('loadedmetadata',function on2(){vEl.removeEventListener('loadedmetadata',on2);setTimeout(function(){tryPlay('metadata')},100)},{once:true});syncLoop()}");
 
             // RAF-based audio sync: play/pause/volume/rate. Only seek on large drift (>0.5s) with 2s cooldown to avoid stutter
-            h.append("function syncLoop(){if(rafId)cancelAnimationFrame(rafId);var lastSeek=0,stalled=0,prevTime=-1,bufTick=0;rafId=requestAnimationFrame(function tick(){rafId=requestAnimationFrame(tick);if(!aEl||!usingDash)return;var v=player.el_.querySelector('video');if(!v)return;if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused){aEl.play().catch(function(){})}aEl.volume=v.muted?0:player.volume();aEl.playbackRate=v.playbackRate;var dt=v.currentTime-aEl.currentTime,now=Date.now();if(Math.abs(dt)>0.5&&now-lastSeek>2000){if(!aEl.paused){aEl.currentTime=v.currentTime;lastSeek=now}}if(!v.paused&&!aEl.paused){if(aEl.currentTime===prevTime){stalled++;if(stalled>180){tl('audioStall','reloading');aEl.load();stalled=0}}else{stalled=0}prevTime=aEl.currentTime}bufTick++;if(bufTick%30===0)showBuffer()})}");
+            h.append("function syncLoop(){if(rafId)cancelAnimationFrame(rafId);var lastSeek=0,stalled=0,prevTime=-1,bufTick=0;rafId=requestAnimationFrame(function tick(){rafId=requestAnimationFrame(tick);if(!aEl||!usingDash)return;var v=player.el_.querySelector('video');if(!v)return;if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused){aEl.play().catch(function(){})}aEl.volume=v.muted?0:player.volume();aEl.playbackRate=v.playbackRate;var dt=v.currentTime-aEl.currentTime,now=Date.now();if(Math.abs(dt)>0.5&&now-lastSeek>2000){if(!aEl.paused){aEl.currentTime=v.currentTime;lastSeek=now}}if(!v.paused&&!aEl.paused){if(aEl.currentTime===prevTime){stalled++;if(stalled>180){tl('audioStall','reloading');aEl.load();stalled=0}}else{stalled=0}prevTime=aEl.currentTime}if(v.paused&&!userPaused&&lastPauseTime>0&&now-lastPauseTime>15000){refreshCdn();lastPauseTime=0}bufTick++;if(bufTick%30===0)showBuffer()})}");
 
             // Set up video-level event hooks for audio sync
             h.append("function wireAudioHooks(){var v=player.el_.querySelector('video');v.addEventListener('seeked',function(){if(aEl)aEl.currentTime=v.currentTime});v.addEventListener('ratechange',function(){if(aEl)aEl.playbackRate=v.playbackRate});v.addEventListener('volumechange',function(){if(aEl)aEl.volume=v.muted?0:player.volume()})}");
@@ -318,7 +323,9 @@ public class VideoController {
             //   - 不再在 play 事件里强制 muted=false，改由「解除静音」按钮触发
             //   - waiting 事件的恢复逻辑只在 canplay 再启动一次 play，移除 setTimeout 定时重试
             //     （定时器 + canplay 并发调用 play 会产生 AbortError: play() interrupted by pause）
-            h.append("function videoEvents(){var v=player.el_.querySelector('video');v.addEventListener('play',function(){tl('play','t='+player.currentTime().toFixed(1))});v.addEventListener('pause',function(){tl('pause','t='+player.currentTime().toFixed(1))});v.addEventListener('seeked',function(){tl('seeked','t='+player.currentTime().toFixed(1))});v.addEventListener('ended',function(){tl('ended','')});v.addEventListener('error',function(){tl('error','c='+(v.error?v.error.code:'?'))});v.addEventListener('volumechange',function(){var btn=document.getElementById('unmuteBtn');if(!btn)return;if(v.muted||player.volume()===0){btn.classList.add('show')}else{btn.classList.remove('show')}});var lastWaiting=0;v.addEventListener('waiting',function(){var now=Date.now();if(now-lastWaiting<1000)return;lastWaiting=now;tl('stall','t='+player.currentTime().toFixed(1));v.addEventListener('canplay',function x(){v.removeEventListener('canplay',x);tl('recover','canplay');if(v.paused&&!v.ended){var p=v.play();if(p&&p.catch)p.catch(function(err){if(err.name!=='AbortError')tl('recoverErr',err.name)})}},{once:true})})};");
+            //   - CDN stall detection: 3+ waiting in 15s or 15s non-user pause → refreshCdn
+            h.append("function videoEvents(){var v=player.el_.querySelector('video');v.addEventListener('play',function(){userPaused=false;lastPauseTime=0;tl('play','t='+player.currentTime().toFixed(1))});v.addEventListener('pause',function(){tl('pause','t='+player.currentTime().toFixed(1));if(!player.userActive()){lastPauseTime=Date.now()}else{userPaused=true}});v.addEventListener('seeked',function(){tl('seeked','t='+player.currentTime().toFixed(1))});v.addEventListener('ended',function(){tl('ended','')});v.addEventListener('error',function(){tl('error','c='+(v.error?v.error.code:'?'))});v.addEventListener('volumechange',function(){var btn=document.getElementById('unmuteBtn');if(!btn)return;if(v.muted||player.volume()===0){btn.classList.add('show')}else{btn.classList.remove('show')}});var lastWaiting=0;v.addEventListener('waiting',function(){var now=Date.now();if(now-lastWaiting<1000)return;lastWaiting=now;cdnStalls++;if(!cdnStallWindow){cdnStallWindow=now}if(now-cdnStallWindow>15000){cdnStalls=1;cdnStallWindow=now}if(cdnStalls>=3){refreshCdn()}tl('stall','t='+player.currentTime().toFixed(1));v.addEventListener('canplay',function x(){v.removeEventListener('canplay',x);tl('recover','canplay');if(v.paused&&!v.ended){var p=v.play();if(p&&p.catch)p.catch(function(err){if(err.name!=='AbortError')tl('recoverErr',err.name)})}},{once:true})})};");
+            h.append("document.getElementById('refreshCdnBtn').addEventListener('click',function(e){e.stopPropagation();userPaused=false;refreshCdn()});");
 
             // 「解除静音」按钮：用户主动点击才 unmute，并同时同步到 audio 元素（DASH 模式）
             h.append("function wireUnmuteBtn(){var btn=document.getElementById('unmuteBtn');if(!btn)return;btn.addEventListener('click',function(e){e.stopPropagation();try{player.muted(false);if(player.volume()===0)player.volume(1);unmuteReq=true;if(aEl){aEl.muted=false;aEl.volume=player.volume();aEl.play().catch(function(err){if(err.name!=='AbortError')tl('unmuteErr',err.name+':'+err.message)})}btn.classList.remove('show');tl('unmute','manual')}catch(err){tl('unmuteErr',err.message)}})};");
@@ -329,7 +336,7 @@ public class VideoController {
             h.append("player.addClass('vjs-bilibili-theme');");
             h.append("videoEvents();wireAudioHooks();wireUnmuteBtn();");
             // autoplay 成功后，提示用户点击按钮取消静音
-            h.append("player.ready(function(){tl('ready','');loadQuality(80).then(function(){var v=player.el_.querySelector('video');if(v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}}).catch(function(){var v=player.el_.querySelector('video');if(v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}})});");
+            h.append("player.ready(function(){tl('ready','');loadQuality(80).then(function(){var v=player.el_.querySelector('video');if(aEl&&v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}}).catch(function(){var v=player.el_.querySelector('video');if(aEl&&v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}})});");
             h.append("</script></body></html>");
             return ResponseEntity.ok().cacheControl(CacheControl.noCache()).body(h.toString());
         });

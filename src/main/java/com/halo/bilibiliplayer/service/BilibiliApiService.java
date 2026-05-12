@@ -415,17 +415,21 @@ public class BilibiliApiService {
         return result;
     }
 
-    public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval) throws Exception {
-        log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}", bvid, cid, qn, fnval);
+    public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval, boolean nocache) throws Exception {
+        log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}, nocache={}", bvid, cid, qn, fnval, nocache);
 
         String cacheKey = bvid + ":" + cid + ":" + qn + ":" + fnval;
-        CacheEntry cached = playUrlCache.get(cacheKey);
-        if (cached != null) {
-            if (!cached.isExpired()) {
-                log.debug("playurl cache hit: {}", cacheKey);
-                return cached.json;
-            }
+        if (nocache) {
             playUrlCache.remove(cacheKey);
+        } else {
+            CacheEntry cached = playUrlCache.get(cacheKey);
+            if (cached != null) {
+                if (!cached.isExpired()) {
+                    log.debug("playurl cache hit: {}", cacheKey);
+                    return cached.json;
+                }
+                playUrlCache.remove(cacheKey);
+            }
         }
 
         if (imgKey == null || subKey == null ||
