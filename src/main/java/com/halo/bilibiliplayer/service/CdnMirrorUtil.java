@@ -45,6 +45,12 @@ public final class CdnMirrorUtil {
         "^(upos|proxy).*-tf-.*\\.bilivideo\\.com$"
     );
 
+    // Original UPOS CDN (non-mirror): upos-sz-{provider}{region}.bilivideo.com
+    // These don't check Referer and work with direct access from any domain
+    private static final Pattern ORIGINAL_UPOS_RE = Pattern.compile(
+        "^upos-(sz|hz|bstar)-[a-z0-9]+\\.bilivideo\\.com$"
+    );
+
     // IP:Port pattern for MCDN detection
     private static final Pattern IP_PORT_RE = Pattern.compile(
         "^(\\d{1,3}\\.){3}\\d{1,3}$"
@@ -83,6 +89,10 @@ public final class CdnMirrorUtil {
         return hostname != null && hostname.contains("mcdn.bilivideo");
     }
 
+    private static boolean isOriginalUpos(String hostname) {
+        return ORIGINAL_UPOS_RE.matcher(hostname).matches();
+    }
+
     /**
      * Upgrade a Bilibili CDN URL to use premium Mirror CDN when possible.
      * Mirror and traffic-free CDNs are kept as-is.
@@ -119,12 +129,15 @@ public final class CdnMirrorUtil {
             } else if (isMirrorCdn(hostname)) {
                 // Already on Mirror tier, keep as-is
                 return url;
+            } else if (isOriginalUpos(hostname)) {
+                // Original UPOS CDN — works without Referer check, keep as-is
+                return url;
             } else if (isMcdnIpPort(hostname)
                 || (isMcdnDomain(hostname) && MCDN_PATH_RE.matcher(uri.getRawPath() != null ? uri.getRawPath() : "").matches())) {
                 // MCDN P2P → route through proxy-tf
                 newHost = PROXY_TF;
             } else {
-                // BCache (cn-*), UPOS (estg*), etc. → upgrade to Mirror
+                // BCache (cn-*), etc. → upgrade to Mirror
                 newHost = pickMirrorChina();
             }
 
