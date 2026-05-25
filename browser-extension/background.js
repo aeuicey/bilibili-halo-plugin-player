@@ -149,10 +149,131 @@ async function pollQrCode(qrcodeKey) {
 }
 
 function generateBuvid3() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxxinfoc'.replace(/[xy]/g, function(c) {
+  return 'BUV3' + 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16).toUpperCase();
-  });
+  }) + 'infoc';
+}
+
+// --- WBI Sign ---
+const MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13];
+let cachedWbiKeys = null;
+let wbiKeysExpire = 0;
+
+function md5(string) {
+  function rotateLeft(lValue, iShiftBits) { return (lValue << iShiftBits) | (lValue >>> (32 - iShiftBits)); }
+  function addUnsigned(lX, lY) {
+    var lX4 = (lX & 0x40000000), lY4 = (lY & 0x40000000), lX8 = (lX & 0x80000000), lY8 = (lY & 0x80000000);
+    var lResult = (lX & 0x3FFFFFFF) + (lY & 0x3FFFFFFF);
+    if (lX4 & lY4) return (lResult ^ 0x80000000 ^ lX8 ^ lY8);
+    if (lX4 | lY4) return (lResult & 0x40000000) ? (lResult ^ 0xC0000000 ^ lX8 ^ lY8) : (lResult ^ 0x40000000 ^ lX8 ^ lY8);
+    return (lResult ^ lX8 ^ lY8);
+  }
+  function f(x,y,z){ return (x & y) | ((~x) & z); }
+  function g(x,y,z){ return (x & z) | (y & (~z)); }
+  function h(x,y,z){ return (x ^ y ^ z); }
+  function i(x,y,z){ return (y ^ (x | (~z))); }
+  function ff(a,b,c,d,x,s,ac){ a = addUnsigned(a, addUnsigned(addUnsigned(f(b,c,d), x), ac)); return addUnsigned(rotateLeft(a,s), b); }
+  function gg(a,b,c,d,x,s,ac){ a = addUnsigned(a, addUnsigned(addUnsigned(g(b,c,d), x), ac)); return addUnsigned(rotateLeft(a,s), b); }
+  function hh(a,b,c,d,x,s,ac){ a = addUnsigned(a, addUnsigned(addUnsigned(h(b,c,d), x), ac)); return addUnsigned(rotateLeft(a,s), b); }
+  function ii(a,b,c,d,x,s,ac){ a = addUnsigned(a, addUnsigned(addUnsigned(i(b,c,d), x), ac)); return addUnsigned(rotateLeft(a,s), b); }
+  function convertToWordArray(string) {
+    var lMessageLength = string.length;
+    var lNumberOfWordsTemp1 = lMessageLength + 8;
+    var lNumberOfWordsTemp2 = (lNumberOfWordsTemp1 - (lNumberOfWordsTemp1 % 64)) / 64;
+    var lNumberOfWords = (lNumberOfWordsTemp2 + 1) * 16;
+    var lWordArray = new Array(lNumberOfWords - 1);
+    var lBytePosition = 0, lByteCount = 0;
+    while (lByteCount < lMessageLength) {
+      var lWordCount = (lByteCount - (lByteCount % 4)) / 4;
+      lBytePosition = (lByteCount % 4) * 8;
+      lWordArray[lWordCount] = (lWordArray[lWordCount] || 0) | (string.charCodeAt(lByteCount) << lBytePosition);
+      lByteCount++;
+    }
+    var lWordCount = (lByteCount - (lByteCount % 4)) / 4;
+    lBytePosition = (lByteCount % 4) * 8;
+    lWordArray[lWordCount] = (lWordArray[lWordCount] || 0) | (0x80 << lBytePosition);
+    lWordArray[lNumberOfWords - 2] = lMessageLength << 3;
+    lWordArray[lNumberOfWords - 1] = lMessageLength >>> 29;
+    return lWordArray;
+  }
+  function wordToHex(lValue) {
+    var wordToHexValue = '';
+    for (var lCount = 0; lCount <= 3; lCount++) {
+      var lByte = (lValue >>> (lCount * 8)) & 255;
+      wordToHexValue += ('0' + lByte.toString(16)).substr(-2);
+    }
+    return wordToHexValue;
+  }
+  var x = [], k, AA, BB, CC, DD, a, b, c, d;
+  var S11=7,S12=12,S13=17,S14=22,S21=5,S22=9,S23=14,S24=20,S31=4,S32=11,S33=16,S34=23,S41=6,S42=10,S43=15,S44=21;
+  string = unescape(encodeURIComponent(string));
+  x = convertToWordArray(string);
+  a = 0x67452301; b = 0xEFCDAB89; c = 0x98BADCFE; d = 0x10325476;
+  for (k = 0; k < x.length; k += 16) {
+    AA=a; BB=b; CC=c; DD=d;
+    a=ff(a,b,c,d,x[k+0],S11,0xD76AA478); d=ff(d,a,b,c,x[k+1],S12,0xE8C7B756); c=ff(c,d,a,b,x[k+2],S13,0x242070DB); b=ff(b,c,d,a,x[k+3],S14,0xC1BDCEEE);
+    a=ff(a,b,c,d,x[k+4],S11,0xF57C0FAF); d=ff(d,a,b,c,x[k+5],S12,0x4787C62A); c=ff(c,d,a,b,x[k+6],S13,0xA8304613); b=ff(b,c,d,a,x[k+7],S14,0xFD469501);
+    a=ff(a,b,c,d,x[k+8],S11,0x698098D8); d=ff(d,a,b,c,x[k+9],S12,0x8B44F7AF); c=ff(c,d,a,b,x[k+10],S13,0xFFFF5BB1); b=ff(b,c,d,a,x[k+11],S14,0x895CD7BE);
+    a=ff(a,b,c,d,x[k+12],S11,0x6B901122); d=ff(d,a,b,c,x[k+13],S12,0xFD987193); c=ff(c,d,a,b,x[k+14],S13,0xA679438E); b=ff(b,c,d,a,x[k+15],S14,0x49B40821);
+    a=gg(a,b,c,d,x[k+1],S21,0xF61E2562); d=gg(d,a,b,c,x[k+6],S22,0xC040B340); c=gg(c,d,a,b,x[k+11],S23,0x265E5A51); b=gg(b,c,d,a,x[k+0],S24,0xE9B6C7AA);
+    a=gg(a,b,c,d,x[k+5],S21,0xD62F105D); d=gg(d,a,b,c,x[k+10],S22,0x2441453); c=gg(c,d,a,b,x[k+15],S23,0xD8A1E681); b=gg(b,c,d,a,x[k+4],S24,0xE7D3FBC8);
+    a=gg(a,b,c,d,x[k+9],S21,0x21E1CDE6); d=gg(d,a,b,c,x[k+14],S22,0xC33707D6); c=gg(c,d,a,b,x[k+3],S23,0xF4D50D87); b=gg(b,c,d,a,x[k+8],S24,0x455A14ED);
+    a=gg(a,b,c,d,x[k+13],S21,0xA9E3E905); d=gg(d,a,b,c,x[k+2],S22,0xFCEFA3F8); c=gg(c,d,a,b,x[k+7],S23,0x676F02D9); b=gg(b,c,d,a,x[k+12],S24,0x8D2A4C8A);
+    a=hh(a,b,c,d,x[k+5],S31,0xFFFA3942); d=hh(d,a,b,c,x[k+8],S32,0x8771F681); c=hh(c,d,a,b,x[k+11],S33,0x6D9D6122); b=hh(b,c,d,a,x[k+14],S34,0xFDE5380C);
+    a=hh(a,b,c,d,x[k+1],S31,0xA4BEEA44); d=hh(d,a,b,c,x[k+4],S32,0x4BDECFA9); c=hh(c,d,a,b,x[k+7],S33,0xF6BB4B60); b=hh(b,c,d,a,x[k+10],S34,0xBEBFBC70);
+    a=hh(a,b,c,d,x[k+13],S31,0x289B7EC6); d=hh(d,a,b,c,x[k+0],S32,0xEAA127FA); c=hh(c,d,a,b,x[k+3],S33,0xD4EF3085); b=hh(b,c,d,a,x[k+6],S34,0x4881D05);
+    a=hh(a,b,c,d,x[k+9],S31,0xD9D4D039); d=hh(d,a,b,c,x[k+12],S32,0xE6DB99E5); c=hh(c,d,a,b,x[k+15],S33,0x1FA27CF8); b=hh(b,c,d,a,x[k+2],S34,0xC4AC5665);
+    a=ii(a,b,c,d,x[k+0],S41,0xF4292244); d=ii(d,a,b,c,x[k+7],S42,0x432AFF97); c=ii(c,d,a,b,x[k+14],S43,0xAB9423A7); b=ii(b,c,d,a,x[k+5],S44,0xFC93A039);
+    a=ii(a,b,c,d,x[k+12],S41,0x655B59C3); d=ii(d,a,b,c,x[k+3],S42,0x8F0CCC92); c=ii(c,d,a,b,x[k+10],S43,0xFFEFF47D); b=ii(b,c,d,a,x[k+1],S44,0x85845DD1);
+    a=ii(a,b,c,d,x[k+8],S41,0x6FA87E4F); d=ii(d,a,b,c,x[k+15],S42,0xFE2CE6E0); c=ii(c,d,a,b,x[k+6],S43,0xA3014314); b=ii(b,c,d,a,x[k+13],S44,0x4E0811A1);
+    a=ii(a,b,c,d,x[k+4],S41,0xF7537E82); d=ii(d,a,b,c,x[k+11],S42,0xBD3AF235); c=ii(c,d,a,b,x[k+2],S43,0x2AD7D2BB); b=ii(b,c,d,a,x[k+9],S44,0xEB86D391);
+    a = addUnsigned(a, AA); b = addUnsigned(b, BB); c = addUnsigned(c, CC); d = addUnsigned(d, DD);
+  }
+  return wordToHex(a) + wordToHex(b) + wordToHex(c) + wordToHex(d);
+}
+
+async function getWbiKeys() {
+  const now = Date.now();
+  if (cachedWbiKeys && now < wbiKeysExpire) return cachedWbiKeys;
+  try {
+    const resp = await fetch('https://api.bilibili.com/x/web-interface/nav', {
+      headers: { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com' }
+    });
+    const json = await resp.json();
+    const imgUrl = json.data && json.data.wbi_img && json.data.wbi_img.img_url || '';
+    const subUrl = json.data && json.data.wbi_img && json.data.wbi_img.sub_url || '';
+    const imgKey = imgUrl.split('/').pop().split('.')[0];
+    const subKey = subUrl.split('/').pop().split('.')[0];
+    cachedWbiKeys = { imgKey, subKey };
+    wbiKeysExpire = now + 55 * 60 * 1000; // refresh 5 min before 1h expiry
+    return cachedWbiKeys;
+  } catch (e) {
+    console.error('[Bilibili Ext BG] WBI keys fetch failed:', e);
+    return cachedWbiKeys || { imgKey: '', subKey: '' };
+  }
+}
+
+function getMixinKey(imgKey, subKey) {
+  const raw = imgKey + subKey;
+  let mixinKey = '';
+  for (let i = 0; i < 32; i++) {
+    mixinKey += raw.charAt(MIXIN_KEY_ENC_TAB[i]);
+  }
+  return mixinKey;
+}
+
+async function signWbi(params) {
+  const keys = await getWbiKeys();
+  const mixinKey = getMixinKey(keys.imgKey, keys.subKey);
+  const wts = Math.round(Date.now() / 1000);
+  params.wts = wts;
+  const sortedKeys = Object.keys(params).sort();
+  const query = sortedKeys.map(function(k) {
+    return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+  }).join('&');
+  const w_rid = md5(query + mixinKey);
+  return query + '&w_rid=' + w_rid;
 }
 
 // --- CDN upgrade for Bilibili video URLs ---
@@ -226,17 +347,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       try {
-        const url = 'https://api.bilibili.com/x/player/playurl?bvid=' + encodeURIComponent(msg.bvid) +
-          '&cid=' + encodeURIComponent(msg.cid) + '&qn=' + encodeURIComponent(msg.qn) +
-          '&fnval=' + encodeURIComponent(msg.fnval || 16) + '&fnver=0&fourk=1&platform=html5';
+        const params = {
+          bvid: msg.bvid,
+          cid: String(msg.cid),
+          qn: String(msg.qn || 80),
+          fnval: String(msg.fnval || 16),
+          fnver: '0',
+          fourk: '1',
+          platform: 'html5'
+        };
+        const signedQuery = await signWbi(params);
+        const url = 'https://api.bilibili.com/x/player/wbi/playurl?' + signedQuery;
+        console.log('[Bilibili Ext BG] getDashUrl request:', url.substring(0, 120));
         const resp = await fetch(url, {
           headers: {
             'User-Agent': UA,
             'Referer': 'https://www.bilibili.com',
+            'Origin': 'https://www.bilibili.com',
             'Cookie': 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata
           }
         });
         const json = await resp.json();
+        console.log('[Bilibili Ext BG] getDashUrl response code:', json.code, 'message:', json.message);
         if (json.code === -101) {
           sendResponse({ok: false, error: 'login_expired'});
           return;
@@ -247,6 +379,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const dash = json.data && json.data.dash;
         if (!dash) {
+          console.log('[Bilibili Ext BG] getDashUrl no dash data, data:', JSON.stringify(json.data).substring(0, 200));
           sendResponse({ok: false, error: 'api_error: no dash data'});
           return;
         }
@@ -277,6 +410,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const videoUrl = upgradeCdn(videoStream.baseUrl || videoStream.base_url);
         const audioUrl = upgradeCdn(audioStream.baseUrl || audioStream.base_url);
+        console.log('[Bilibili Ext BG] getDashUrl success, quality:', quality, 'v:', videoUrl.substring(0, 60), 'a:', audioUrl.substring(0, 60));
         sendResponse({
           ok: true,
           videoUrl: videoUrl,
@@ -287,6 +421,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           height: videoStream.height
         });
       } catch (err) {
+        console.error('[Bilibili Ext BG] getDashUrl exception:', err);
         sendResponse({ok: false, error: 'api_error: ' + err.message});
       }
     });

@@ -13,7 +13,7 @@
     window.postMessage({
       source: 'bilibili-player-extension',
       type: 'installed',
-      version: '2.0',
+      version: '2.1',
       timestamp: Date.now()
     }, '*');
 
@@ -23,7 +23,7 @@
         window.postMessage({
           source: 'bilibili-player-extension',
           type: 'status',
-          version: '2.0',
+          version: '2.1',
           installed: true,
           login: status.login,
           userInfo: status.userInfo || null,
@@ -50,7 +50,7 @@
       window.postMessage({
         source: 'bilibili-player-extension',
         type: 'installed',
-        version: '2.0',
+        version: '2.1',
         timestamp: Date.now()
       }, '*');
 
@@ -60,7 +60,7 @@
           window.postMessage({
             source: 'bilibili-player-extension',
             type: 'status',
-            version: '2.0',
+            version: '2.1',
             installed: true,
             login: status.login,
             userInfo: status.userInfo || null,

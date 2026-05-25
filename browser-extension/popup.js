@@ -140,10 +140,12 @@ function loadRulesetStatus() {
       } else if (count > 0) {
         logEl.innerHTML = '<div class="log-title">最近 ' + count + ' 条匹配</div>' +
           info.slice(-8).map(function(m) {
+            var url = (m.request && m.request.url) || (m.url || 'unknown');
+            var ruleId = (m.rule && m.rule.ruleId) || '?';
             return '<div class="log-item"><span class="log-time">' +
               new Date(m.timeStamp).toLocaleTimeString() + '</span>' +
-              '<span class="log-url" title="' + escapeHtml(m.request.url) + '">R' + m.rule.ruleId + ' ' +
-              escapeHtml(m.request.url.substring(0, 55)) + '</span></div>';
+              '<span class="log-url" title="' + escapeHtml(url) + '">R' + ruleId + ' ' +
+              escapeHtml((url || '').substring(0, 55)) + '</span></div>';
           }).join('');
       } else {
         logEl.innerHTML = '<div class="log-empty">最近 10 分钟无匹配记录</div>';

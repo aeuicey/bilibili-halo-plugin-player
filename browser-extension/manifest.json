@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Player - Referer Helper",
-  "version": "2.0",
+  "version": "2.1",
   "description": "Modify headers for Bilibili CDN requests with login support. Enables HD playback via tunnel proxy.",
   "declarative_net_request": {
     "rule_resources": [
