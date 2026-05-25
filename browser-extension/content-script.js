@@ -9,27 +9,20 @@
     signalCount++;
     console.log('[Bilibili Ext] Signaling player page (attempt ' + signalCount + '/' + MAX_SIGNALS + ')');
 
-    // Broadcast basic installed signal first
-    window.postMessage({
-      source: 'bilibili-player-extension',
-      type: 'installed',
-      version: '2.1',
-      timestamp: Date.now()
-    }, '*');
-
-    // Then query background for full status
+    // Query background for full status FIRST, then send a single consolidated message.
+    // This avoids the race condition where player sees 'installed' but misses delayed 'status'.
     chrome.runtime.sendMessage({ type: 'getStatus' }, function(status) {
-      if (status) {
-        window.postMessage({
-          source: 'bilibili-player-extension',
-          type: 'status',
-          version: '2.1',
-          installed: true,
-          login: status.login,
-          userInfo: status.userInfo || null,
-          timestamp: Date.now()
-        }, '*');
-      }
+      var payload = {
+        source: 'bilibili-player-extension',
+        type: 'status',
+        version: '2.1',
+        installed: true,
+        login: status ? status.login === true : false,
+        userInfo: status ? (status.userInfo || null) : null,
+        timestamp: Date.now()
+      };
+      window.postMessage(payload, '*');
+      console.log('[Bilibili Ext] Sent status, login=' + payload.login);
     });
   }
 
@@ -46,27 +39,19 @@
       console.log('[Bilibili Ext] Received ping from player, responding with full status...');
       signalCount = 0; // reset count so we always respond to pings
 
-      // Respond immediately with installed signal
-      window.postMessage({
-        source: 'bilibili-player-extension',
-        type: 'installed',
-        version: '2.1',
-        timestamp: Date.now()
-      }, '*');
-
-      // Then send full status
+      // Query background and send consolidated status (same as signal())
       chrome.runtime.sendMessage({ type: 'getStatus' }, function(status) {
-        if (status) {
-          window.postMessage({
-            source: 'bilibili-player-extension',
-            type: 'status',
-            version: '2.1',
-            installed: true,
-            login: status.login,
-            userInfo: status.userInfo || null,
-            timestamp: Date.now()
-          }, '*');
-        }
+        var payload = {
+          source: 'bilibili-player-extension',
+          type: 'status',
+          version: '2.1',
+          installed: true,
+          login: status ? status.login === true : false,
+          userInfo: status ? (status.userInfo || null) : null,
+          timestamp: Date.now()
+        };
+        window.postMessage(payload, '*');
+        console.log('[Bilibili Ext] Ping response sent, login=' + payload.login);
       });
     }
   });

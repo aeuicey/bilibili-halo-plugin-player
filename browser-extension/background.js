@@ -235,8 +235,12 @@ function md5(string) {
 
 async function getWbiKeys() {
   const now = Date.now();
-  if (cachedWbiKeys && now < wbiKeysExpire) return cachedWbiKeys;
+  if (cachedWbiKeys && now < wbiKeysExpire) {
+    console.log('[Bilibili Ext BG] WBI keys cache hit');
+    return cachedWbiKeys;
+  }
   try {
+    console.log('[Bilibili Ext BG] Fetching WBI keys...');
     const resp = await fetch('https://api.bilibili.com/x/web-interface/nav', {
       headers: { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com' }
     });
@@ -245,11 +249,12 @@ async function getWbiKeys() {
     const subUrl = json.data && json.data.wbi_img && json.data.wbi_img.sub_url || '';
     const imgKey = imgUrl.split('/').pop().split('.')[0];
     const subKey = subUrl.split('/').pop().split('.')[0];
+    console.log('[Bilibili Ext BG] WBI keys fetched, imgKey=' + imgKey.substring(0,8) + '... subKey=' + subKey.substring(0,8) + '...');
     cachedWbiKeys = { imgKey, subKey };
-    wbiKeysExpire = now + 55 * 60 * 1000; // refresh 5 min before 1h expiry
+    wbiKeysExpire = now + 55 * 60 * 1000;
     return cachedWbiKeys;
   } catch (e) {
-    console.error('[Bilibili Ext BG] WBI keys fetch failed:', e);
+    console.error('[Bilibili Ext BG] WBI keys fetch failed:', e.message);
     return cachedWbiKeys || { imgKey: '', subKey: '' };
   }
 }
