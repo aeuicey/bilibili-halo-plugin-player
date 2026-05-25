@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili Player - Referer Helper",
+  "version": "2.0",
+  "description": "Modify headers for Bilibili CDN requests with login support. Enables HD playback via tunnel proxy.",
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "rules",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.bilivideo.com/*",
+    "*://*.akamaized.net/*",
+    "*://*.hdslb.com/*",
+    "*://*.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Bilibili Player 状态"
+  }
+}

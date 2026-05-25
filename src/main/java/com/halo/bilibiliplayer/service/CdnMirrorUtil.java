@@ -45,12 +45,6 @@ public final class CdnMirrorUtil {
         "^(upos|proxy).*-tf-.*\\.bilivideo\\.com$"
     );
 
-    // Original UPOS CDN (non-mirror): upos-sz-{provider}{region}.bilivideo.com
-    // These don't check Referer and work with direct access from any domain
-    private static final Pattern ORIGINAL_UPOS_RE = Pattern.compile(
-        "^upos-(sz|hz|bstar)-[a-z0-9]+\\.bilivideo\\.com$"
-    );
-
     // IP:Port pattern for MCDN detection
     private static final Pattern IP_PORT_RE = Pattern.compile(
         "^(\\d{1,3}\\.){3}\\d{1,3}$"
@@ -80,17 +74,12 @@ public final class CdnMirrorUtil {
 
     private static boolean isMcdnIpPort(String hostname) {
         if (hostname == null) return false;
-        // Hostname may include port, strip it for IP check
         String host = hostname.contains(":") ? hostname.substring(0, hostname.indexOf(':')) : hostname;
         return IP_PORT_RE.matcher(host).matches();
     }
 
     private static boolean isMcdnDomain(String hostname) {
         return hostname != null && hostname.contains("mcdn.bilivideo");
-    }
-
-    private static boolean isOriginalUpos(String hostname) {
-        return ORIGINAL_UPOS_RE.matcher(hostname).matches();
     }
 
     /**
@@ -119,25 +108,17 @@ public final class CdnMirrorUtil {
             String newHost = hostname;
 
             if (isProxyTf(hostname)) {
-                // Traffic-free CDN, keep as-is
                 return url;
             }
 
             if (isOverseasCdn(hostname)) {
-                // Overseas CDN → upgrade to Mirror China
                 newHost = pickMirrorChina();
             } else if (isMirrorCdn(hostname)) {
-                // Already on Mirror tier, keep as-is
-                return url;
-            } else if (isOriginalUpos(hostname)) {
-                // Original UPOS CDN — works without Referer check, keep as-is
                 return url;
             } else if (isMcdnIpPort(hostname)
                 || (isMcdnDomain(hostname) && MCDN_PATH_RE.matcher(uri.getRawPath() != null ? uri.getRawPath() : "").matches())) {
-                // MCDN P2P → route through proxy-tf
                 newHost = PROXY_TF;
             } else {
-                // BCache (cn-*), etc. → upgrade to Mirror
                 newHost = pickMirrorChina();
             }
 

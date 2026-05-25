@@ -1,6 +1,5 @@
 package com.halo.bilibiliplayer.controller;
 
-import com.halo.bilibiliplayer.service.BilibiliApiService;
 import com.halo.bilibiliplayer.service.LogService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -12,32 +11,10 @@ import java.util.Map;
 @RequestMapping("/plugins/bilibili-player/api")
 public class LoginController {
 
-    private final BilibiliApiService bilibiliApiService;
     private final LogService logService;
 
-    public LoginController(BilibiliApiService bilibiliApiService, LogService logService) {
-        this.bilibiliApiService = bilibiliApiService;
+    public LoginController(LogService logService) {
         this.logService = logService;
-    }
-
-    @GetMapping("/login/qrcode/generate")
-    public Mono<String> generateQrCode() {
-        return Mono.fromCallable(bilibiliApiService::generateQrCode);
-    }
-
-    @GetMapping("/login/qrcode/poll")
-    public Mono<String> pollQrCode(@RequestParam("qrcode_key") String qrcodeKey) {
-        return Mono.fromCallable(() -> bilibiliApiService.pollQrCode(qrcodeKey));
-    }
-
-    @GetMapping("/login/status")
-    public Mono<String> checkLoginStatus() {
-        return Mono.fromCallable(bilibiliApiService::checkLoginStatus);
-    }
-
-    @PostMapping("/login/logout")
-    public Mono<String> logout() {
-        return Mono.fromCallable(bilibiliApiService::logout);
     }
 
     @GetMapping("/logs/history")

@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "Referer", "operation": "set", "value": "https://www.bilibili.com" },
+        { "header": "Origin", "operation": "set", "value": "https://www.bilibili.com" }
+      ],
+      "responseHeaders": [
+        { "header": "Access-Control-Allow-Origin", "operation": "set", "value": "*" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*://*bilivideo.com/*",
+      "resourceTypes": ["media", "xmlhttprequest", "sub_frame", "other"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "Referer", "operation": "set", "value": "https://www.bilibili.com" },
+        { "header": "Origin", "operation": "set", "value": "https://www.bilibili.com" }
+      ],
+      "responseHeaders": [
+        { "header": "Access-Control-Allow-Origin", "operation": "set", "value": "*" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*://*akamaized.net/*",
+      "resourceTypes": ["media", "xmlhttprequest", "sub_frame", "other"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "Referer", "operation": "set", "value": "https://www.bilibili.com" },
+        { "header": "Origin", "operation": "set", "value": "https://www.bilibili.com" }
+      ],
+      "responseHeaders": [
+        { "header": "Access-Control-Allow-Origin", "operation": "set", "value": "*" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*://*hdslb.com/*",
+      "resourceTypes": ["media", "xmlhttprequest", "sub_frame", "other"]
+    }
+  }
+]

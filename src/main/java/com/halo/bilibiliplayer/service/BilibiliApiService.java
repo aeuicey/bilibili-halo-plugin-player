@@ -8,7 +8,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,20 +22,15 @@ import java.util.concurrent.TimeUnit;
 public class BilibiliApiService {
 
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-    private static final String NAV_URL = "https://api.bilibili.com/x/web-interface/nav";
-    private static final String QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
-    private static final String QRCODE_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
-    private static final String PLAYURL_URL = "https://api.bilibili.com/x/player/wbi/playurl";
+    private static final String PLAYURL_URL = "https://api.bilibili.com/x/player/playurl";
     private static final Path DATA_DIR = Paths.get(System.getProperty("user.home"), ".halo-bilibili-player");
+    private static final Path BUVID_FILE = DATA_DIR.resolve("buvid3");
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final LogService log;
 
-    private volatile String imgKey;
-    private volatile String subKey;
-    private volatile String sessdata;
-    private volatile long lastKeyUpdateTime;
+    private volatile String buvid3;
 
     private static final long CACHE_TTL_MS = 10 * 60 * 1000;
     private final ConcurrentHashMap<String, CacheEntry> playUrlCache = new ConcurrentHashMap<>();
@@ -60,7 +55,7 @@ public class BilibiliApiService {
         } catch (Exception e) {
             log.error("创建数据目录失败: {}", e.getMessage());
         }
-        loadSessdata();
+        loadBuvid3();
     }
 
     private HttpResponse<String> sendWithTimeout(HttpRequest request, int timeoutSec) throws Exception {
@@ -68,273 +63,49 @@ public class BilibiliApiService {
                 .get(timeoutSec, TimeUnit.SECONDS);
     }
 
-    private void loadSessdata() {
-        try {
-            Path sessFile = DATA_DIR.resolve("sessdata");
-            if (Files.exists(sessFile)) {
-                this.sessdata = Files.readString(sessFile).trim();
-                log.info("已从文件加载SESSDATA, 长度={}", sessdata.length());
-            } else {
-                log.info("未找到持久化的SESSDATA文件，需要重新登录");
-            }
-        } catch (Exception e) {
-            log.error("加载SESSDATA文件失败: {}", e.getMessage());
+    public String getBuvid3() {
+        if (buvid3 == null || buvid3.isEmpty()) {
+            buvid3 = generateBuvid3();
         }
+        return buvid3;
     }
 
-    private void saveSessdata() {
+    private void loadBuvid3() {
         try {
-            if (sessdata != null && !sessdata.isEmpty()) {
-                Files.writeString(DATA_DIR.resolve("sessdata"), sessdata);
-                log.info("SESSDATA已持久化到文件, 长度={}", sessdata.length());
-            }
-        } catch (Exception e) {
-            log.error("保存SESSDATA文件失败: {}", e.getMessage());
-        }
-    }
-
-    public String getSessdata() {
-        return sessdata;
-    }
-
-    public void setSessdata(String sessdata) {
-        this.sessdata = sessdata;
-        log.info("设置SESSDATA, 长度={}, 前10字符={}", sessdata != null ? sessdata.length() : 0,
-                sessdata != null && sessdata.length() > 10 ? sessdata.substring(0, 10) + "..." : sessdata);
-        saveSessdata();
-    }
-
-    public String generateQrCode() throws Exception {
-        log.info("开始生成B站登录二维码...");
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(QRCODE_GENERATE_URL))
-                .header("User-Agent", USER_AGENT)
-                .GET()
-                .build();
-
-        HttpResponse<String> response = sendWithTimeout(request, 8);
-        log.debug("二维码生成响应状态码: {}", response.statusCode());
-
-        JsonNode root = objectMapper.readTree(response.body());
-        int code = root.get("code").asInt();
-        log.info("B站二维码API返回 code={}, message={}", code, root.get("message").asText());
-
-        if (code != 0) {
-            log.error("获取二维码失败: {}", root.get("message").asText());
-            throw new RuntimeException("获取二维码失败: " + root.get("message").asText());
-        }
-
-        JsonNode data = root.get("data");
-        Map<String, String> result = new HashMap<>();
-        result.put("url", data.get("url").asText());
-        result.put("qrcodeKey", data.get("qrcode_key").asText());
-
-        log.info("二维码生成成功, qrcodeKey={}", data.get("qrcode_key").asText().substring(0, 8) + "...");
-        return objectMapper.writeValueAsString(result);
-    }
-
-    public String pollQrCode(String qrcodeKey) {
-        String shortKey = qrcodeKey != null && qrcodeKey.length() >= 8 ? qrcodeKey.substring(0, 8) : qrcodeKey;
-        log.debug("轮询扫码状态, qrcodeKey={}...", shortKey);
-
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(QRCODE_POLL_URL + "?qrcode_key=" + qrcodeKey))
-                    .header("User-Agent", USER_AGENT)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = sendWithTimeout(request, 8);
-            JsonNode root = objectMapper.readTree(response.body());
-
-            log.debug("轮询响应: code={}, message={}",
-                    root.has("code") ? root.get("code").asText() : "无",
-                    root.has("message") ? root.get("message").asText() : "无");
-
-            JsonNode data = root.get("data");
-            if (data == null || data.isNull()) {
-                log.warn("轮询响应data为null, B站返回code={}", root.has("code") ? root.get("code").asText() : "无");
-                return objectMapper.writeValueAsString(Map.of("status", "error", "message", "响应异常"));
-            }
-
-            int statusCode = data.has("code") ? data.get("code").asInt() : -1;
-            Map<String, Object> result = new HashMap<>();
-
-            log.info("轮询状态: statusCode={}, hasUrl={}", statusCode, data.has("url") && !data.get("url").isNull());
-
-            if (statusCode == 0) {
-                if (data.has("url") && !data.get("url").isNull()) {
-                    String redirectUrl = data.get("url").asText();
-                    log.info("扫码成功，回调URL前100字符: {}", redirectUrl.length() > 100 ? redirectUrl.substring(0, 100) + "..." : redirectUrl);
-
-                    Map<String, String> cookies = parseUrlParams(redirectUrl);
-                    log.info("从回调URL解析到参数: {}", cookies.keySet());
-
-                    String sess = cookies.get("SESSDATA");
-                    if (sess != null && !sess.isEmpty()) {
-                        String decoded = URLDecoder.decode(sess, StandardCharsets.UTF_8);
-                        log.info("提取到SESSDATA, 原始长度={}, 解码后长度={}", sess.length(), decoded.length());
-                        setSessdata(decoded);
-                        result.put("status", "success");
-                        result.put("message", "登录成功");
-                    } else {
-                        log.error("回调URL中未找到SESSDATA参数, 解析到的参数: {}", cookies);
-                        result.put("status", "error");
-                        result.put("message", "未找到SESSDATA");
-                    }
-                } else {
-                    log.warn("statusCode=0但url字段为空或null");
-                    result.put("status", "pending");
-                    result.put("message", "等待确认");
+            if (Files.exists(BUVID_FILE)) {
+                this.buvid3 = Files.readString(BUVID_FILE).trim();
+                if (buvid3.isEmpty()) {
+                    this.buvid3 = generateBuvid3();
+                    Files.writeString(BUVID_FILE, buvid3);
                 }
-            } else if (statusCode == 86038) {
-                log.info("二维码已过期");
-                result.put("status", "expired");
-                result.put("message", "二维码已过期");
-            } else if (statusCode == 86090) {
-                log.info("已扫码，等待用户在手机上确认");
-                result.put("status", "scanned");
-                result.put("message", "已扫码，请在手机上确认");
-            } else if (statusCode == 86101) {
-                log.debug("等待扫码...");
-                result.put("status", "pending");
-                result.put("message", "等待扫码");
+                log.info("已加载buvid3, 长度={}", buvid3.length());
             } else {
-                log.warn("未知状态码: {}, message={}", statusCode, data.has("message") ? data.get("message").asText() : "无");
-                result.put("status", "pending");
-                result.put("message", data.has("message") ? data.get("message").asText() : "等待扫码");
+                this.buvid3 = generateBuvid3();
+                Files.writeString(BUVID_FILE, buvid3);
+                log.info("已生成并持久化buvid3, 长度={}", buvid3.length());
             }
-
-            return objectMapper.writeValueAsString(result);
         } catch (Exception e) {
-            log.error("轮询扫码状态异常: {}", e.getMessage());
-            try {
-                return objectMapper.writeValueAsString(Map.of("status", "error", "message", "轮询失败: " + e.getMessage()));
-            } catch (Exception ex) {
-                return "{\"status\":\"error\",\"message\":\"内部错误\"}";
-            }
+            this.buvid3 = generateBuvid3();
+            log.warn("加载buvid3失败，使用临时值: {}", e.getMessage());
         }
     }
 
-    private Map<String, String> parseUrlParams(String url) {
-        Map<String, String> params = new LinkedHashMap<>();
-        try {
-            String query = url.contains("?") ? url.substring(url.indexOf("?") + 1) : "";
-            for (String pair : query.split("&")) {
-                String[] kv = pair.split("=", 2);
-                if (kv.length == 2) {
-                    params.put(kv[0], kv[1]);
-                }
-            }
-        } catch (Exception e) {
-            log.error("解析URL参数失败: {}", e.getMessage());
-        }
-        return params;
-    }
-
-    public String checkLoginStatus() throws Exception {
-        log.debug("检查登录状态, SESSDATA存在={}, 长度={}",
-                sessdata != null, sessdata != null ? sessdata.length() : 0);
-
-        Map<String, Object> result = new HashMap<>();
-
-        if (sessdata == null || sessdata.isEmpty()) {
-            log.info("SESSDATA为空，未登录");
-            result.put("isLogin", false);
-            result.put("message", "未登录");
-            return objectMapper.writeValueAsString(result);
-        }
-
-        try {
-            log.debug("调用B站nav API验证登录状态...");
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(NAV_URL))
-                    .header("User-Agent", USER_AGENT)
-                    .header("Cookie", "SESSDATA=" + sessdata)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = sendWithTimeout(request, 8);
-            JsonNode root = objectMapper.readTree(response.body());
-
-            int code = root.get("code").asInt();
-            log.info("nav API响应: code={}, message={}", code,
-                    root.has("message") ? root.get("message").asText() : "无");
-
-            if (code == 0) {
-                JsonNode data = root.get("data");
-                boolean isLogin = data.get("isLogin").asBoolean();
-                log.info("登录验证结果: isLogin={}, uname={}", isLogin,
-                        data.has("uname") ? data.get("uname").asText() : "未知");
-
-                result.put("isLogin", isLogin);
-                if (isLogin) {
-                    result.put("mid", data.get("mid").asLong());
-                    result.put("uname", data.get("uname").asText());
-                    result.put("face", data.get("face").asText());
-                    result.put("vipStatus", data.get("vipStatus").asInt());
-                    result.put("vipType", data.get("vipType").asInt());
-                    if (data.has("level_info")) {
-                        result.put("level", data.get("level_info").get("current_level").asInt());
-                    }
-                    log.info("用户信息: uid={}, name={}, level={}, vipType={}",
-                            data.get("mid").asLong(), data.get("uname").asText(),
-                            data.has("level_info") ? data.get("level_info").get("current_level").asInt() : 0,
-                            data.get("vipType").asInt());
-                }
-            } else if (code == -101) {
-                log.warn("SESSDATA已过期(code=-101)，清除登录状态");
-                result.put("isLogin", false);
-                result.put("message", "会话已过期，请重新登录");
-                this.sessdata = null;
-                playUrlCache.clear();
-            } else {
-                log.warn("nav API返回非0状态: code={}, message={}", code,
-                        root.has("message") ? root.get("message").asText() : "无");
-                result.put("isLogin", false);
-                result.put("message", "会话已过期，请重新登录");
-                this.sessdata = null;
-                playUrlCache.clear();
-            }
-        } catch (Exception e) {
-            log.error("验证登录状态异常: {}", e.getMessage());
-            result.put("isLogin", false);
-            result.put("message", "验证登录状态失败: " + e.getMessage());
-        }
-
-        return objectMapper.writeValueAsString(result);
-    }
-
-    public String logout() throws Exception {
-        log.info("用户退出登录, 清除SESSDATA");
-        this.sessdata = null;
-        playUrlCache.clear();
-        try {
-            Files.deleteIfExists(DATA_DIR.resolve("sessdata"));
-            log.info("已删除持久化的SESSDATA文件");
-        } catch (Exception e) {
-            log.error("删除SESSDATA文件失败: {}", e.getMessage());
-        }
-        return objectMapper.writeValueAsString(Map.of("success", true, "message", "已退出登录"));
+    private static String generateBuvid3() {
+        String uuid = java.util.UUID.randomUUID().toString().toUpperCase();
+        return uuid + "infoc";
     }
 
     public String getVideoInfo(String bvid) throws Exception {
         log.info("获取视频信息: bvid={}", bvid);
         String infoUrl = "https://api.bilibili.com/x/web-interface/view?bvid=" + bvid;
 
-        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+        HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(infoUrl))
                 .header("User-Agent", USER_AGENT)
-                .header("Referer", "https://www.bilibili.com");
+                .header("Referer", "https://www.bilibili.com")
+                .GET()
+                .build();
 
-        if (sessdata != null && !sessdata.isEmpty()) {
-            requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
-            log.debug("携带SESSDATA请求视频信息");
-        }
-
-        HttpRequest request = requestBuilder.GET().build();
         HttpResponse<String> response = sendWithTimeout(request, 8);
         JsonNode root = objectMapper.readTree(response.body());
 
@@ -416,12 +187,21 @@ public class BilibiliApiService {
     }
 
     public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval, boolean nocache) throws Exception {
-        log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}, nocache={}", bvid, cid, qn, fnval, nocache);
+        return getVideoPlayUrl(bvid, cid, qn, fnval, nocache, "html5");
+    }
 
-        String cacheKey = bvid + ":" + cid + ":" + qn + ":" + fnval;
+    public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval, boolean nocache, String platform) throws Exception {
+        log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}, nocache={}, platform={}", bvid, cid, qn, fnval, nocache, platform);
+
+        if (qn >= 80) {
+            log.info("拒绝高清请求(qn>=80)，提示安装浏览器扩展");
+            return "{\"error\":\"高清播放需要安装浏览器扩展\",\"acceptQuality\":[],\"acceptDescription\":[],\"quality\":0}";
+        }
+
+        String cacheKey = bvid + ":" + cid + ":" + qn + ":" + fnval + ":html5";
         if (nocache) {
             playUrlCache.remove(cacheKey);
-        } else {
+        } else if (qn <= 64 && fnval <= 1) {
             CacheEntry cached = playUrlCache.get(cacheKey);
             if (cached != null) {
                 if (!cached.isExpired()) {
@@ -432,31 +212,29 @@ public class BilibiliApiService {
             }
         }
 
-        if (imgKey == null || subKey == null ||
-                System.currentTimeMillis() - lastKeyUpdateTime > 3600000) {
-            log.info("刷新WBI签名密钥...");
-            refreshWbiKeys();
-        }
-
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("bvid", bvid);
         params.put("cid", cid);
         params.put("qn", qn);
         params.put("fnval", fnval);
         params.put("fnver", 0);
-        params.put("fourk", 1);
+        params.put("platform", "html5");
 
-        String signedQuery = WbiSignUtil.signParams(params, imgKey, subKey);
-        log.debug("WBI签名完成");
+        StringBuilder query = new StringBuilder();
+        for (Map.Entry<String, Object> entry : params.entrySet()) {
+            if (query.length() > 0) query.append("&");
+            query.append(URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
+            query.append("=");
+            query.append(URLEncoder.encode(String.valueOf(entry.getValue()), StandardCharsets.UTF_8));
+        }
 
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(PLAYURL_URL + "?" + signedQuery))
+                .uri(URI.create(PLAYURL_URL + "?" + query))
                 .header("User-Agent", USER_AGENT)
                 .header("Referer", "https://www.bilibili.com");
 
-        if (sessdata != null && !sessdata.isEmpty()) {
-            requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
-        }
+        String cookie = "buvid3=" + (buvid3 != null ? buvid3 : generateBuvid3());
+        requestBuilder.header("Cookie", cookie);
 
         HttpRequest request = requestBuilder.GET().build();
         HttpResponse<String> response = sendWithTimeout(request, 8);
@@ -472,7 +250,9 @@ public class BilibiliApiService {
         log.info("播放地址获取成功, quality={}, format={}",
                 root.get("data").get("quality").asInt(), root.get("data").get("format").asText());
         String jsonResult = objectMapper.writeValueAsString(parsePlayUrlResponse(root.get("data")));
-        playUrlCache.put(cacheKey, new CacheEntry(jsonResult, System.currentTimeMillis() + CACHE_TTL_MS));
+        if (qn <= 64 && fnval <= 1) {
+            playUrlCache.put(cacheKey, new CacheEntry(jsonResult, System.currentTimeMillis() + CACHE_TTL_MS));
+        }
         return jsonResult;
     }
 
@@ -554,26 +334,5 @@ public class BilibiliApiService {
         }
 
         return result;
-    }
-
-    private void refreshWbiKeys() throws Exception {
-        log.debug("刷新WBI密钥...");
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(NAV_URL))
-                .header("User-Agent", USER_AGENT)
-                .GET()
-                .build();
-
-        HttpResponse<String> response = sendWithTimeout(request, 8);
-        JsonNode root = objectMapper.readTree(response.body());
-        JsonNode wbiImg = root.get("data").get("wbi_img");
-        String imgUrl = wbiImg.get("img_url").asText();
-        String subUrl = wbiImg.get("sub_url").asText();
-
-        this.imgKey = imgUrl.substring(imgUrl.lastIndexOf('/') + 1, imgUrl.lastIndexOf('.'));
-        this.subKey = subUrl.substring(subUrl.lastIndexOf('/') + 1, subUrl.lastIndexOf('.'));
-        this.lastKeyUpdateTime = System.currentTimeMillis();
-        log.info("WBI密钥已刷新: imgKey={}..., subKey={}...",
-                imgKey.substring(0, 8), subKey.substring(0, 8));
     }
 }

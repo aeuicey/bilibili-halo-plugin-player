@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:300px;padding:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;color:#eee;background:#1a1a2e}
+.section{margin-bottom:12px}
+.section-title{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.header{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dot.active{background:#4caf50;box-shadow:0 0 6px rgba(76,175,80,.6)}
+.dot.inactive{background:#f44336;box-shadow:0 0 6px rgba(244,67,54,.4)}
+.dot.waiting{background:#ff9800;box-shadow:0 0 6px rgba(255,152,0,.4)}
+.label{font-weight:500}
+.status-text{font-size:12px;color:#aaa;line-height:1.5}
+.rule-list{font-size:11px;color:#888;margin-top:4px}
+.rule-item{display:flex;align-items:center;gap:6px;padding:2px 0}
+.rule-dot{width:6px;height:6px;border-radius:50%;background:#4caf50;flex-shrink:0}
+/* Connection status */
+.conn-row{display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0}
+.conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#555}
+.conn-dot.active{background:#4caf50;box-shadow:0 0 4px rgba(76,175,80,.6)}
+.conn-text{color:#aaa}
+.conn-text.active{color:#4caf50}
+.conn-info{font-size:10px;color:#555;margin-top:2px}
+/* Match log */
+.log-title{font-size:11px;color:#fb7299;margin-bottom:4px;font-weight:500}
+.log-item{font-size:10px;color:#888;padding:2px 0;display:flex;gap:6px}
+.log-time{color:#666;flex-shrink:0}
+.log-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-empty{font-size:10px;color:#555}
+/* Login section */
+.login-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.login-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;background:#555}
+.login-dot.logged-in{background:#4caf50;box-shadow:0 0 6px rgba(76,175,80,.6)}
+.login-label{font-size:12px;color:#aaa}
+.login-info{font-size:10px;color:#555;margin-top:2px}
+.btn-login{padding:6px 14px;font-size:12px;border-radius:6px;border:none;cursor:pointer;font-family:inherit;background:#fb7299;color:#fff;margin-top:4px}
+.btn-login:hover{background:#e05a83}
+.btn-logout{padding:4px 10px;font-size:11px;border-radius:4px;border:1px solid rgba(255,255,255,.12);cursor:pointer;font-family:inherit;background:transparent;color:#aaa;margin-left:6px}
+.btn-logout:hover{background:rgba(255,255,255,.08)}
+#qrContainer{margin-top:8px;text-align:center}
+#qrImage{width:180px;height:180px;border-radius:8px;background:#fff;padding:4px}
+#qrStatus{font-size:11px;color:#888;margin-top:4px}
+.footer{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);font-size:10px;color:#555;display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<div class="section">
+  <div class="section-title">B站登录</div>
+  <div id="loginSection">
+    <div class="login-row">
+      <span class="login-dot" id="loginDot"></span>
+      <span class="login-label" id="loginLabel">未登录</span>
+    </div>
+    <div class="login-info" id="loginInfo"></div>
+    <button class="btn-login" id="loginBtn">扫码登录</button>
+    <button class="btn-logout" id="logoutBtn" style="display:none">退出</button>
+  </div>
+  <div id="qrContainer" style="display:none">
+    <img id="qrImage" />
+    <div id="qrStatus">请使用B站App扫码</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">规则状态</div>
+  <div class="header">
+    <span class="dot" id="dot"></span>
+    <span class="label" id="statusLabel">检查中...</span>
+  </div>
+  <div class="status-text" id="statusDesc"></div>
+  <div class="rule-list" id="ruleList"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">播放器连接</div>
+  <div id="connStatus">
+    <div class="conn-row">
+      <span class="conn-dot"></span>
+      <span class="conn-text">等待播放器连接...</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">CDN 请求日志</div>
+  <div id="matchLog"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">拦截/替换记录</div>
+  <div id="interceptLog">
+    <div class="log-empty">等待请求...</div>
+  </div>
+</div>
+
+<div class="footer">
+  <span>Bilibili Player v2.0</span>
+  <span id="refreshHint" style="color:#fb7299;cursor:pointer">↻ 刷新</span>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
