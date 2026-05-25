@@ -2,250 +2,289 @@
 
 [![Build](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml/badge.svg)](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml)
 
-为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例、浏览器扩展直连 CDN 零代理延迟。
+为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入方案，由 **Halo Plugin（服务端）** 与 **Chrome 扩展（客户端）** 两个独立组件协同工作：
+
+- **Halo Plugin** —— 生成自包含嵌入播放器、管理后台、≤720P 视频代理、CDN 镜像升级
+- **浏览器扩展** —— 注入 Referer 实现 CDN 直连、独立扫码登录、DASH 高清地址解析与回传
+
+两者通过 `window.postMessage` 双向通信，扩展未安装时自动降级为服务端代理模式。
 
 > 📖 完整技术文档见 [how.md](./how.md) —— 从架构全景到每一行设计的取舍。
 > 🎨 UI 设计指导见 [DESIGN.md](./DESIGN.md) —— Cal.com 设计系统令牌体系。
 
 <img width="1357" height="1692" alt="image" src="https://github.com/user-attachments/assets/8ec6109b-2c2b-43c3-ae55-6bee598196aa" />
 
+---
 
-## 功能特性
+## 目录
 
-- **扫码登录** — 插件管理后台生成 B站 登录二维码，扫码授权后 SESSDATA 自动持久化，Halo 重启后自动恢复登录态
-- **多清晰度支持** — 360P / 480P / 720P / 1080P / 1080P60 / 4K，登录后解锁更高画质（大会员可看 4K）
-- **DASH 音画分离播放** — `<video>` + 隐藏 `<audio>` 双元素 `setInterval` 毫秒级同步，±150ms 容忍度
-- **浏览器扩展直连** — Chrome 扩展通过 `declarativeNetRequest` 注入 Referer 头，让读者浏览器直连 B站 CDN，完全绕过服务端代理
-- **CDN 智能升级** — 自动将海外 / P2P CDN 节点替换为国内优质镜像（13 节点轮询），降低延迟
-- **分辨率自适应** — 自动识别横屏(16:9)、竖屏(9:16)、方形视频，嵌入代码 + 播放器同步对应画幅比例
-- **WBI 签名** — 完整实现 B站 WBI 混音密钥签名算法，密钥每小时自动刷新
-- **后台管理** — 输入 BV 号即可生成嵌入代码，一键复制，粘贴到文章 HTML 编辑器即可使用
-- **实时日志** — SSE 实时推送 + 环形缓冲（300 条），按级别过滤，附带玩家遥测上报
-- **GitHub Actions 自动构建** — 每次推送自动编译生成 JAR 包
+- [总体路线图](#总体路线图)
+- [Halo Plugin](#halo-plugin)
+  - [版本迭代](#halo-plugin-版本迭代)
+  - [架构与实现](#halo-plugin-架构与实现)
+- [浏览器扩展](#浏览器扩展)
+  - [版本迭代](#浏览器扩展-版本迭代)
+  - [架构与实现](#浏览器扩展-架构与实现)
+- [两端通信协议](#两端通信协议)
+- [安装](#安装)
+- [使用指南](#使用指南)
+- [技术栈](#技术栈)
+- [开源协议](#开源协议)
+
+---
+
+## 总体路线图
+
+```
+2026-05      2026-05      2026-05      2026-06      2026-07
+   │            │            │            │            │
+   ▼            ▼            ▼            ▼            ▼
+┌──────┐    ┌──────┐    ┌──────┐    ┌──────┐    ┌──────┐
+│v1.5  │───►│v1.6  │───►│v1.7  │───►│v1.8  │───►│v1.9  │
+│后端   │    │后端+ │    │后端+ │    │后端  │    │后端  │
+│      │    │扩展v1│    │扩展v2│    │      │    │      │
+└──────┘    └──────┘    └──────┘    └──────┘    └──────┘
+```
+
+| 阶段 | 版本 | 目标 | 状态 |
+|------|------|------|------|
+| **基础播放** | v1.0–v1.4 | 多清晰度嵌入、DASH 音画同步、扫码登录、CDN 代理 | ✅ 已完成 |
+| **代理优化** | v1.5 | CDN 镜像智能升级（13 节点）、WBI 签名、扩展 Referer 注入 | ✅ 已完成 |
+| **扩展奠基** | v1.6 | Chrome 扩展 v1.0：Referer 注入 + 安装检测 + 遥测日志 | ✅ 已完成 |
+| **高清直连** | v1.7 | 扩展 v2.x：扫码登录迁移至扩展、DASH 高清地址回传、WBI 签名内联、流式连接步骤 UI | ✅ 已完成 |
+| **生态扩展** | v1.8 | 弹幕加载、播放列表/合集支持、分 P 连续播放 | 🚧 计划中 |
+| **体验打磨** | v1.9 | 暗色模式、自定义播放器主题、移动端响应式优化 | 🚧 计划中 |
+| **国际化** | v1.10 | i18n、播放统计、快捷键支持 | 🚧 计划中 |
+
+---
+
+## Halo Plugin
+
+### Halo Plugin 版本迭代
+
+| 版本 | 日期 | 核心变更 |
+|------|------|----------|
+| **v1.0** | 2026-04 | 基础视频嵌入、360P/480P/720P 多清晰度、Video.js 播放器控件 |
+| **v1.1** | 2026-04 | 扫码登录、SESSDATA 持久化恢复、高清晰度解锁（后端持有凭证） |
+| **v1.2** | 2026-04 | DASH 音视频分离播放、双元素 RAF 毫秒级同步、清晰度动态切换 |
+| **v1.3** | 2026-05 | 分辨率自适应画幅比例、SSE 实时日志面板、嵌入代码生成器、PlayerState 无缝切换 |
+| **v1.4** | 2026-05 | CDN 代理连接修复、封面图优化、cid 复用修复、管理后台品牌化、移除 Tiptap 编辑器扩展 |
+| **v1.5** | 2026-05 | CDN 镜像智能升级（`CdnMirrorUtil`，13 节点轮询）、WBI 签名算法（`WbiSignUtil`）、`nocache` 参数、播放地址缓存 key 修复 |
+| **v1.6** | 2026-05 | 浏览器扩展 v1.0 配套：扩展双向握手检测、CDN 容灾/备用 URL 降级、播放器遥测上报、日志 SSE 推送、遥测 GET 绕过 CSRF |
+| **v1.7** | 2026-05 | 流式连接步骤 UI（5 节点毛玻璃步骤条）、扩展 DASH 高清直连架构、后端 WBI 模块移除、登录体系完全迁移至扩展、`plugin.yaml` 版本字段修复 |
+
+### Halo Plugin 架构与实现
+
+后端跑在 Halo 的 Spring WebFlux 容器内，职责随版本演进逐步收窄：
+
+**当前职责边界（v1.7）**
+
+| 职责 | 说明 | 对应文件 |
+|------|------|----------|
+| 嵌入页面生成 | `StringBuilder` 拼接自包含 HTML（内联 CSS + JS + Video.js CDN 异步加载） | `VideoController.java` |
+| ≤720P 视频代理 | `Flux<DataBuffer>` 流式反向代理 B站 CDN，注入 Referer/Origin | `VideoController.proxyVideo()` |
+| CDN 镜像升级 | 将劣质 CDN（海外/MCDN/P2P）替换为国内优质镜像（13 节点轮询） | `CdnMirrorUtil.java` |
+| 视频信息解析 | 从 BV 号解析标题/封面/分 P/尺寸等元数据 | `BilibiliApiService.java` |
+| 日志收集 | 环形缓冲（300 条）+ SSE 实时推送 + SLF4J 双写 | `LogService.java` |
+| 管理后台 | Vue 3 SPA：扫码登录面板、嵌入代码生成器、日志抽屉 | `HomeView.vue` |
+
+**已移除的职责（迁移至扩展）**
+
+| 原职责 | 移除版本 | 迁移原因 |
+|--------|----------|----------|
+| SESSDATA 持有与扫码登录 | v1.7 | 安全隔离：凭证不应留在服务端 |
+| WBI 签名（高清 playurl） | v1.7 | 高清请求下放至扩展，后端仅处理公开资源 |
+| DASH 地址解析（qn≥80） | v1.7 | 扩展持有 SESSDATA 后直接请求 B站 API |
+
+**嵌入播放器引擎**
+
+后端生成的 HTML 页面内联约 200 行 JS，核心模块：
+
+- **双元素 RAF 同步** — `<video>` 播放视频轨 + 隐藏 `<audio>` 播放音频轨，`requestAnimationFrame` 每 16ms 校正一次，±150ms 容忍度
+- **清晰度策略** — `qn < 80` 走单元素 FLV/MP4；`qn >= 80` 进入 DASH 双元素模式
+- **扩展检测** — `postMessage` 双向握手（5 次递增信号 + 主动 ping），3 秒超时降级代理
+- **PlayerState** — 切换清晰度前保存 `currentTime` + `isPlaying`，新实例加载后恢复
+- **CDN 容灾** — 5 分钟内 3 次 waiting 事件自动刷新播放地址
+
+---
+
+## 浏览器扩展
+
+### 浏览器扩展版本迭代
+
+扩展版本独立于 Plugin 版本，遵循 `major.minor` 语义：
+
+| 版本 | 日期 | 配套 Plugin | 核心变更 |
+|------|------|-------------|----------|
+| **v1.0** | 2026-05 | v1.5/v1.6 | `declarativeNetRequest` Referer 注入、content-script 信号广播、安装检测、popup 状态展示 |
+| **v2.0** | 2026-05 | v1.7 | 扫码登录迁移至扩展 popup、SESSDATA 存入 `chrome.storage.local`、动态 DNR 规则注入 Cookie、高清 DASH 地址获取与回传 |
+| **v2.1** | 2026-05 | v1.7 | 内联 WBI 签名算法（MD5 + mixin_key + w_rid）、修复 buvid3 格式（加 `BUV3` 前缀）、修复 popup.js 空指针、统一 `status` 消息消除时序竞争 |
+
+### 浏览器扩展架构与实现
+
+Chrome MV3 Service Worker + content script + popup，共 5 个文件：
+
+| 文件 | 职责 |
+|------|------|
+| `manifest.json` | 声明权限（`declarativeNetRequest` + `storage`）、content script 注入规则（`document_start`，`all_frames`） |
+| `background.js` | Service Worker：登录流程（二维码生成/轮询/SESSDATA 提取）、WBI 签名、DASH URL 获取、动态 DNR 规则更新 |
+| `content-script.js` | 页面注入：统一 `status` 消息广播（先查 background 再发送）、DASH 请求转发、连接记录 |
+| `popup.html` / `popup.js` | 工具栏弹窗：展示登录状态/用户信息/最后连接域名、触发扫码登录/登出 |
+| `rules.json` | 静态 DNR 规则：`Referer: https://www.bilibili.com` 注入所有 `*.bilivideo.com/*` 请求 |
+
+**扩展登录流程（v2.x）**
+
+```
+用户点击扩展图标
+  → popup 调用 chrome.runtime.sendMessage({type:'generateQr'})
+    → background.js 调 B站 /qrcode/generate
+      ← {url, qrcode_key}
+    → popup 渲染二维码（前端 Canvas，B站粉配色）
+    → 轮询 /qrcode/poll（前端 setInterval 2000ms）
+      ← 状态码 0 时从回调 URL 提取 SESSDATA
+    → SESSDATA 存入 chrome.storage.local
+    → updateDnrRules() 注入 Cookie + Referer 动态规则
+    → 调 /nav 验证登录态，获取昵称/头像/等级
+```
+
+**DASH 高清回传流程（v2.x）**
+
+```
+播放器 iframe（qn≥80）
+  → postMessage {type:'requestDash', bvid, cid, qn, fnval}
+    → content-script 转发 chrome.runtime.sendMessage({type:'getDashUrl', ...})
+      → background.js：
+        1. 生成 buvid3（BUV3 + UUID + infoc 格式）
+        2. fetch WBI 密钥（imgKey + subKey）
+        3. 签名参数（mixin_key + MD5 → w_rid）
+        4. fetch B站 /x/player/wbi/playurl（Cookie: SESSDATA + buvid3）
+        5. 选取 AVC 视频轨 + 最高码率音频轨
+        6. CDN 镜像升级（与后端 CdnMirrorUtil 镜像池保持一致）
+      ← {videoUrl, audioUrl, codecs, width, height, quality}
+    ← content-script postMessage {type:'dashUrl', ok:true, ...}
+  → 播放器直接加载 CDN 直链（扩展已注入 Referer，无需代理）
+```
+
+**WBI 签名内联实现（v2.1）**
+
+B站 2023 年起对 playurl API 强制要求 WBI 签名。扩展 background.js 内联完整算法：
+
+1. 从 `nav` API 获取 `img_url` + `sub_url` → 提取 `imgKey` + `subKey`
+2. 混音密钥表（`MIXIN_KEY_ENC_TAB`）从 `(imgKey + subKey)` 中抽取 32 字符 = `mixinKey`
+3. 参数排序 → URL 编码 → 拼接 `mixinKey` → MD5 → `w_rid`
+4. 密钥每小时自动刷新（首次请求时检查过期）
+
+**通信时序修复（v2.1）**
+
+v2.0 的信号策略：先广播 `installed` 消息，再异步查询 background 发 `status`。播放器在 6 秒重试窗口内可能只收到第一条（无 login 信息），误判为未登录而降级到 720P。
+
+v2.1 改为**统一 `status` 消息**：`signal()` 先调用 `chrome.runtime.sendMessage({type:'getStatus'})` 获取完整状态，然后一次性发送 `{type:'status', installed:true, login, userInfo}`。播放器侧优先处理 `status`，兼容 legacy `installed`。
+
+---
+
+## 两端通信协议
+
+扩展与播放器通过 `window.postMessage` 通信，消息格式统一为：
+
+```javascript
+{
+  source: 'bilibili-player-extension',  // 扩展发出
+  // 或
+  source: 'bilibili-player',            // 播放器发出
+  type: '...',
+  ...
+}
+```
+
+### 消息类型对照表
+
+| 方向 | type | 触发时机 | 负载 |
+|------|------|----------|------|
+| 扩展 → 播放器 | `status` | content-script 启动 / 响应 ping | `{installed:true, login, userInfo}` |
+| 扩展 → 播放器 | `installed` | v2.0 及之前（v2.1 兼容） | `{version:'2.1'}` |
+| 扩展 → 播放器 | `dashUrl` | background 返回 DASH 地址后 | `{ok, videoUrl, audioUrl, codecs, width, height, quality, error}` |
+| 播放器 → 扩展 | `ping` | 播放器初始化时主动探测 | `{}` |
+| 播放器 → 扩展 | `requestDash` | 选择 qn≥80 清晰度时 | `{reqId, bvid, cid, qn, fnval}` |
+
+### 网络架构对比
+
+**扩展未安装（降级模式）**
+
+```
+读者浏览器
+  → GET /plugins/bilibili-player/api/video/proxy?url=<CDN>
+    → Halo 服务器（Spring WebFlux Flux<DataBuffer>）
+      → B站 CDN（Referer/Origin 伪装）
+```
+
+**扩展已安装（直连模式）**
+
+```
+读者浏览器
+  → GET <B站 CDN 直链>
+    → 扩展 declarativeNetRequest 注入 Referer: bilibili.com
+      → B站 CDN（验证通过）
+```
+
+---
 
 ## 安装
 
-1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 或 [Actions](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml) 页面下载最新 JAR 包
-2. 进入 Halo 后台 → 插件管理 → 上传插件，选择下载的 JAR 文件
-3. 在已安装插件列表中找到 "BiliBili播放器"，确认已启用
+### 1. 安装 Halo Plugin
+
+1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 或 [Actions](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml) 下载最新 JAR 包
+2. Halo 后台 → 插件管理 → 上传插件 → 选择 JAR
+3. 启用 "BiliBili播放器"
+
+### 2. 安装浏览器扩展（推荐，解锁高清）
+
+1. 下载 `bilibili-player-extension-v2.1.zip`
+2. Chrome 地址栏输入 `chrome://extensions/`，开启"开发者模式"
+3. 点击"加载已解压的扩展程序"，选择解压后的 `browser-extension/` 文件夹
+4. 扩展图标显示在工具栏，点击图标扫码登录 B站
+
+> 扩展未安装时播放器仍可正常工作，但最高仅支持 720P（走服务端代理）。
+
+---
 
 ## 使用指南
 
-### 1. 扫码登录（可选）
+### 扫码登录（扩展端，推荐）
 
-> 登录后可获取 720P 及以上清晰度。未登录仅支持 480P。
+1. 点击 Chrome 工具栏的扩展图标
+2. 点击"生成登录二维码"，用 B站 App 扫码
+3. 手机确认授权后，扩展自动保存 SESSDATA
+4. 播放器页面自动识别登录态并加载 1080P+/4K
 
-- 进入 Halo 后台 → 左侧菜单"B站播放器" → 账号登录
-- 点击"生成登录二维码"，使用 B站客户端扫码
-- 手机确认授权后，页面自动显示登录成功及用户信息
-- 登录状态持久化到服务器文件系统，Halo 重启后自动恢复
+### 生成嵌入代码
 
-### 2. 生成嵌入代码
+1. Halo 后台 → 左侧菜单"B站播放器"
+2. 切换到"嵌入代码"标签页
+3. 输入 BV 号或 B站链接，点击"解析"
+4. 多 P 视频可选择分 P
+5. 点击"复制代码"，粘贴到文章编辑器的 HTML 视图中
 
-- 切换到"嵌入代码"标签页
-- 输入 B站视频链接或 BV 号，点击"解析"
-- 多 P 视频可选择对应分 P
-- 系统自动识别视频分辨率并显示横/竖屏标记
-- 点击"复制代码"，将 HTML 代码粘贴到文章编辑器的 HTML 视图中
-- 页面读者即可看到内嵌的 B站播放器
+### 读者端播放
 
-### 3. 读者端播放
-
-- 播放器自动加载最高可用清晰度（默认 1080P，登录后）
+- 播放器自动加载最高可用清晰度
 - 右下角画质按钮可切换清晰度
 - 横屏/竖屏视频自动匹配正确画幅比例
-- 支持完整 Video.js 控件（播放/暂停/进度/音量/画中画/全屏）
+- 底部步骤条实时展示连接链路状态
 
-## 技术路线
+---
 
-### 音视频分离播放（DASH Dual Element Sync）
+## 技术栈
 
-B站 720P+ 视频采用 DASH 协议，音视频分离为独立 m4s 文件。本插件实现了一套**零外部依赖的音视频同步方案**：
-
-```
-B站 playurl API (fnval=16)
-  → dash.video[] (m4s)  → <video src="proxy">
-  → dash.audio[] (m4s)  → <audio style="display:none" src="proxy">
-                              ↑
-                    requestAnimationFrame
-                     每帧同步 播放/暂停/seek/音量/倍速
-```
-
-**为何不用 MSE / WebAV？**
-
-初期尝试了 `MediaSource` + `SourceBuffer` 手工推流，以及 `@webav/av-cliper` 的 `mixinMP4AndAudio` 合并方案。两者均因 Spring WebFlux 代理返回的 `ReadableStream` 不兼容浏览器原生 `pipeThrough` 接口而失败。
-
-**最终方案——Dual Element RAF Sync**，与 B站官方播放器思路一致（音画分离 + 客户端同步），但使用 `<video>` / `<audio>` 原生标签替代复杂的 MSE 管线：
-
-- `video` 元素加载视频轨 — 浏览器内置解码器，HEVC/AVC/AV1 自适应
-- `audio` 元素加载音频轨 — 隐藏 DOM，相同的代理 URL 路径
-- `requestAnimationFrame` 循环 — 每 16ms 校正一次音频时间，±150ms 容忍度
-- `seeked` / `ratechange` / `volumechange` 事件钩子 — 鼠标拖动进度条时间步响应
-
-### 清晰度策略
-
-| 清晰度 | qn | fnval | 返回格式 | 播放方式 |
-|--------|-----|-------|---------|---------|
-| 360P/480P/720P | 64 | 1 | durl MP4 直链 | 单一 `<video>` |
-| 1080P/4K+ | ≥80 | 16 | DASH 音视频分离 | 双元素 RAF 同步 |
-
-### 分辨率自适应
-
-- 嵌入代码：`aspect-ratio` 使用实际 `W/H` 而非硬编码 `16/9`
-- 播放器：`loadQuality` 后将轨道 `width/height` 注入 CSS 容器
-- 管理后台：分析视频后显示 `1920×1080 · Landscape` 或 `1080×1920 · Portrait`
-
-### 网络架构
-
-```
-浏览器 fetch
-  → /api/video/proxy?url=<Bilibili CDN>
-    → Spring WebFlux Flux<DataBuffer> streaming
-      → B站 CDN (Referer/Origin 伪装)
-        → 浏览器原生 <video>/<audio>
-```
-
-### CDN 智能升级
-
-B站分配的 CDN 节点质量参差不齐。`CdnMirrorUtil` 在返回播放地址前对每条 CDN URL 做域名级别升级：
-
-- 免流 CDN / 国内镜像 CDN → 原样保留
-- 海外 CDN（Cloudflare / Akamai） → 替换为国内镜像
-- MCDN P2P（依赖其他用户上传，不稳定） → 替换为直连 CDN
-- 普通 UPOS CDN → 替换为国内镜像
-
-国内镜像池 13 个节点（阿里云/腾讯云/华为云/百度云/金山云等），`AtomicInteger` 轮询选取。
-
-### WBI 签名
-
-B站部分 API（如高清晰度 playurl）要求 WBI 签名。v1.7 之前后端完整实现混音密钥算法（`WbiSignUtil`）用于服务端代理高清请求；v1.7 将高清解析迁移至浏览器扩展后，后端仅需处理 ≤720P 的 FLV/MP4 请求（`qn=64, fnval=0`），该参数组合通常不受 WBI 限制，因此后端 WBI 模块已移除。扩展端在请求 B站 playurl 时直接使用标准 Cookie 鉴权，无需额外签名。
-
-### 浏览器扩展直连模式
-
-CDN 代理是瓶颈 —— 所有视频流量都经过 Halo 服务器。Chrome 扩展通过 `declarativeNetRequest` API 在发出请求前注入 `Referer: https://www.bilibili.com` 头，让读者浏览器直连 B站 CDN。
-
-扩展与播放器通过 `window.postMessage` 双向握手检测安装状态（5 次递增间隔信号 + 主动 ping 响应），3 秒内未检测到则回退到代理模式。
-
-### 扩展 DASH 高清回传架构（v1.7）
-
-高清播放（qn≥80）需要 B站登录态（SESSDATA）。为避免服务端持有用户凭证带来的安全风险，v1.7 将高清解析完全下放至浏览器扩展：
-
-```
-播放器 iframe (qn≥80)
-  → postMessage "requestDash" ──────► 扩展 content-script
-                                     │
-                                     ├──► 扩展 background.js
-                                     │     fetch B站 playurl (Cookie: SESSDATA)
-                                     │     ← {dash.video[], dash.audio[]}
-                                     │
-  ◄── postMessage "dashUrl" ─────────┘
-      {videoUrl, audioUrl, codecs, width, height}
-```
-
-- **扩展独立持有 SESSDATA** — 扫码登录在扩展 popup 中完成，凭证仅存于 `chrome.storage.local`，服务端无感知
-- **地址回传** — content-script 将 DASH 音视频 URL 通过 `postMessage` 回传播放器，播放器直接加载 CDN 直链
-- **降级容错** — 扩展未登录/凭证过期时，回传错误码，播放器自动降级到 720P FLV 并提示用户登录
-- **CDN 升级双端** — 扩展 background.js 也内置了 CDN 镜像升级逻辑，与后端 `CdnMirrorUtil` 镜像池保持一致
-
-### 流式连接步骤显示（v1.7）
-
-嵌入播放器在初始化到可播放之间有一段"黑盒时间"（检测扩展 → 获取地址 → 缓冲）。v1.7 在视频区域底部叠加了一个毛玻璃步骤条，将链路可视化：
-
-```
-●───●───●───●───●
-^   ^   ^   ^   ^
-1   2   3   4   5
-
-1: 检测插件状态          → "正在检测插件状态"
-2: 确定策略              → "检测到插件" / "未检测到插件，使用默认播放策略"
-3: 解析清晰度            → "正在解析清晰度"
-4: 等待播放地址          → "正在等待插件回传播放地址" → "回传成功"
-5: 等待缓冲              → "正在等待播放缓冲" → "播放就绪"（淡出）
-```
-
-- **状态机驱动** — 11 个挂载点（扩展检测、playurl 返回、DASH 回传、`canplay` 事件等）调用 `setConnectionStep()` 推进步骤
-- **防降级设计** — `setConnectionStep(s,t)` 拒绝步骤回退，避免切换清晰度时文字闪烁
-- **无干扰** — `pointer-events: none` + 播放就绪后 1.2s 自动淡出，不遮挡 Video.js 控件
-
-## 路线图
-
-### 已完成
-
-- [x] **v1.0** — 基础视频嵌入、360P/480P/720P 多清晰度、Video.js 播放器控件
-- [x] **v1.1** — 扫码登录、SESSDATA 持久化恢复、高清晰度解锁
-- [x] **v1.2** — DASH 音视频分离播放、双元素 RAF 毫秒级同步
-- [x] **v1.3** — 分辨率自适应画幅比例、SSE 实时日志面板、嵌入代码生成器
-- [x] **v1.4** — CDN 代理连接修复、封面图优化、cid 复用修复、管理后台品牌化、移除 Tiptap 编辑器扩展
-- [x] **v1.5** — CDN 镜像智能升级（13 节点轮询）、WBI 签名算法、浏览器扩展 Referer 注入
-- [x] **v1.6** — 浏览器扩展双向握手检测、CDN 容灾/备用 URL 降级、播放器遥测、日志 SSE 推送
-
-### 计划中
-
-- [x] **v1.7** — 流式连接步骤显示、浏览器扩展双向握手 DASH 高清直连、插件配置页品牌化
-- [ ] **v1.8** — 弹幕加载、播放列表/合集支持、分 P 连续播放
-- [ ] **v1.9** — 暗色模式、自定义播放器主题、移动端响应式优化
-- [ ] **v1.10** — 国际化 (i18n)、播放统计、快捷键支持
-
-> 欢迎通过 [Issues](https://github.com/aeuicey/bilibili-halo-plugin-player/issues) 提交功能建议与反馈。
-
-## 开发
-
-```bash
-# 克隆仓库
-git clone https://github.com/aeuicey/bilibili-halo-plugin-player.git
-cd bilibili-halo-plugin-player
-
-# 构建
-./gradlew build -x test
-
-# JAR 包路径
-# build/libs/plugin-bilibili-player-X.X.X.jar
-```
-
-### 技术栈
-
-| 层级 | 技术 |
+| 组件 | 技术 |
 |------|------|
-| 后端 | Java 21 / Spring WebFlux / Halo Plugin API |
-| 前端 | Vue 3 + TypeScript / Vite / Halo UI Components |
+| Halo Plugin 后端 | Java 21 / Spring WebFlux / Halo Plugin API |
+| Halo Plugin 前端 | Vue 3 + TypeScript / Vite / Halo UI Components |
+| 嵌入播放器 | Video.js 8 / 内联 Vanilla JS / 双元素 RAF 同步 |
+| 浏览器扩展 | Chrome MV3 / declarativeNetRequest / Service Worker |
 | 构建 | Gradle / pnpm |
 | CI/CD | GitHub Actions (JDK 21 + Node 20 + pnpm 10) |
 
-## 更新日志
-
-### v1.7.0 (2026-05-25)
-
-- **新增** 嵌入播放器流式连接步骤显示 — 在视频区域底部以步骤条形式实时展示检测插件 → 确定策略 → 解析清晰度 → 等待播放地址 → 等待缓冲的完整链路，播放就绪后自动淡出
-- **新增** 浏览器扩展 DASH 高清直连架构 — 扩展通过 `chrome.runtime.sendMessage` 获取 DASH 音视频地址并 `postMessage` 回传播放器，qn≥80 的高清请求完全由扩展承载，服务端仅提供 ≤720P 的 FLV/MP4 解析
-- **重构** 登录体系迁移至浏览器扩展 — 后端不再持有 SESSDATA，扫码登录由扩展 popup 独立完成，避免服务端凭证泄露风险
-- **修复** `updateModeStatus()` 引用的 `modeStatus` DOM 元素缺失，导致播放模式（FLV/DASH/直连/代理）状态标签不显示的问题
-- **修复** `plugin.yaml` 补充 `version` 字段，满足 Halo 插件元数据规范
-
-### v1.6.0 (2026-05-14)
-
-- **新增** 浏览器扩展（`browser-extension/`），`declarativeNetRequest` Referer 注入直连 CDN
-- **新增** 扩展双向握手检测（`postMessage` ping/pong），3 秒超时回退代理模式
-- **新增** 播放器遥测上报（play/pause/seek/error），含父页面来源追踪
-- **新增** CDN 容灾机制：累计 3 次错误自动刷新播放地址，备用 URL 降级
-- **新增** `DESIGN.md` UI 设计指导（Cal.com 设计系统令牌体系）
-- **新增** `how.md` 完整技术文档（660+ 行，架构全景 + 设计取舍）
-- **优化** 日志系统：SSE 实时推送 + 环形缓冲（300 条），双写 SLF4J
-- **优化** 播放地址缓存 TTL 从 5 分钟延长至 10 分钟，按 `bvid+cid+qn+fnval` 组合缓存
-- **优化** 嵌入页面内联 Video.js 关键 CSS，CDN 故障时控件不崩
-
-### v1.5.0 (2026-05-12)
-
-- **新增** CDN 镜像智能升级（`CdnMirrorUtil`），13 节点轮询替代单点 CDN
-- **新增** WBI 签名算法（`WbiSignUtil`），完整实现 B站混音密钥签名
-- **新增** `nocache` 参数支持，前端可强制刷新播放地址缓存
-- **修复** playurl 缓存 key 缺少 cid 维度导致不同分 P 返回相同地址
-
-### v1.4.0 (2026-05-11)
-
-- **修复** 连续解析不同视频时 cid 被复用导致播放失败的问题
-- **修复** CDN 代理流传输中连接中断导致 EOFException 异常
-- **修复** 视频封面图 HTTP→HTTPS 重定向导致的缩略图加载失败，并优化封面图片尺寸
-- **优化** 管理后台顶栏设计，标题品牌化升级
+---
 
 ## 开源协议
 
