@@ -412,6 +412,15 @@ chrome.runtime.onConnect.addListener(function(port) {
       if (opts.headers && typeof opts.headers === 'object') {
         for (var k in opts.headers) { headers[k] = opts.headers[k]; }
       }
+      // Inject Referer/Origin/Cookie manually (webRequestBlocking doesn't work in MV3)
+      var storage = await chrome.storage.local.get(['sessdata', 'buvid3']);
+      var referer = currentBvid ? 'https://www.bilibili.com/video/' + currentBvid + '/' : 'https://www.bilibili.com';
+      headers['Referer'] = referer;
+      headers['Origin'] = 'https://www.bilibili.com';
+      if (storage.sessdata) {
+        headers['Cookie'] = 'buvid3=' + (storage.buvid3 || '') + '; SESSDATA=' + storage.sessdata;
+      }
+      console.log('[Bilibili Ext BG] fetchProxy headers injected, referer=', referer.substring(0,60), 'cookie_len=' + (headers['Cookie'] ? headers['Cookie'].length : 0));
       var resp = await fetch(msg.url, {
         method: opts.method || 'GET',
         headers: headers
