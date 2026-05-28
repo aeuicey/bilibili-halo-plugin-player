@@ -15,7 +15,9 @@
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
-    "storage"
+    "storage",
+    "webRequest",
+    "webRequestBlocking"
   ],
   "host_permissions": [
     "*://*.bilivideo.com/*",

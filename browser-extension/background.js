@@ -8,6 +8,71 @@ const NAV_URL = 'https://api.bilibili.com/x/web-interface/nav';
 const DNR_RULE_ID = 200;
 
 let pollTimer = null;
+// Global cache for webRequest sync access (DNR modifyHeaders doesn't work for fetch in Chrome 148+)
+let cachedCookie = '';
+let currentBvid = '';
+
+// --- webRequest header modification (replaces broken DNR requestHeaders) ---
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    const headers = details.requestHeaders || [];
+    const referer = currentBvid
+      ? 'https://www.bilibili.com/video/' + currentBvid + '/'
+      : 'https://www.bilibili.com';
+
+    // Update Referer
+    let idx = headers.findIndex(h => h.name.toLowerCase() === 'referer');
+    if (idx >= 0) headers[idx].value = referer;
+    else headers.push({name: 'Referer', value: referer});
+
+    // Update Origin
+    idx = headers.findIndex(h => h.name.toLowerCase() === 'origin');
+    if (idx >= 0) headers[idx].value = 'https://www.bilibili.com';
+    else headers.push({name: 'Origin', value: 'https://www.bilibili.com'});
+
+    // Add Cookie (SESSDATA + buvid3)
+    if (cachedCookie) {
+      idx = headers.findIndex(h => h.name.toLowerCase() === 'cookie');
+      if (idx >= 0) headers[idx].value = cachedCookie;
+      else headers.push({name: 'Cookie', value: cachedCookie});
+    }
+
+    return {requestHeaders: headers};
+  },
+  {
+    urls: [
+      '*://*.bilivideo.com/*',
+      '*://*.akamaized.net/*',
+      '*://*.hdslb.com/*'
+    ]
+  },
+  ['blocking', 'requestHeaders', 'extraHeaders']
+);
+
+// --- webRequest CORS response modification ---
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    const headers = details.responseHeaders || [];
+    let idx = headers.findIndex(h => h.name.toLowerCase() === 'access-control-allow-origin');
+    if (idx >= 0) headers[idx].value = '*';
+    else headers.push({name: 'Access-Control-Allow-Origin', value: '*'});
+
+    idx = headers.findIndex(h => h.name.toLowerCase() === 'access-control-allow-credentials');
+    if (idx >= 0) headers[idx].value = 'true';
+    else headers.push({name: 'Access-Control-Allow-Credentials', value: 'true'});
+
+    return {responseHeaders: headers};
+  },
+  {
+    urls: [
+      '*://*.bilivideo.com/*',
+      '*://*.akamaized.net/*',
+      '*://*.hdslb.com/*'
+    ]
+  },
+  ['responseHeaders', 'extraHeaders']
+);
+
 
 // --- Initialize DNR rules on EVERY service worker start ---
 // Manifest V3 terminates SW after ~30s idle. onInstalled/onStartup don't fire on wake.
@@ -33,6 +98,8 @@ chrome.runtime.onStartup?.addListener(() => {
 
 // --- Dynamic DNR rules: inject SESSDATA cookie + Referer into CDN requests ---
 async function updateDnrRules(sessdata, buvid3) {
+  // Cache cookie for webRequest sync access
+  cachedCookie = buvid3 && sessdata ? 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata : '';
   try {
     const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
     const existingIds = existingRules.map(r => r.id);
@@ -156,7 +223,7 @@ function generateBuvid3() {
 }
 
 // --- WBI Sign ---
-const MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13];
+const MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
 let cachedWbiKeys = null;
 let wbiKeysExpire = 0;
 
@@ -233,6 +300,36 @@ function md5(string) {
   return wordToHex(a) + wordToHex(b) + wordToHex(c) + wordToHex(d);
 }
 
+async function getPlayInfoFromPage(bvid, sessdata) {
+  try {
+    console.log('[Bilibili Ext BG] Fetching __playinfo__ from Bilibili page for', bvid, 'with login=', !!sessdata);
+    const headers = {
+      'User-Agent': UA,
+      'Referer': 'https://www.bilibili.com',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    };
+    if (sessdata) {
+      headers['Cookie'] = 'SESSDATA=' + sessdata;
+    }
+    const resp = await fetch('https://www.bilibili.com/video/' + bvid + '/', { headers });
+    const html = await resp.text();
+    const match = html.match(/window\.__playinfo__\s*=\s*(\{.*?\})<\/script>/);
+    if (!match) {
+      console.log('[Bilibili Ext BG] __playinfo__ not found in page HTML');
+      return null;
+    }
+    const playinfo = JSON.parse(match[1]);
+    console.log('[Bilibili Ext BG] __playinfo__ parsed, code:', playinfo.code,
+      'hasDash:', !!(playinfo.data && playinfo.data.dash),
+      'quality:', playinfo.data && playinfo.data.quality,
+      'acceptQuality:', playinfo.data && playinfo.data.accept_quality);
+    return playinfo;
+  } catch (e) {
+    console.error('[Bilibili Ext BG] getPlayInfoFromPage error:', e.message);
+    return null;
+  }
+}
+
 async function getWbiKeys() {
   const now = Date.now();
   if (cachedWbiKeys && now < wbiKeysExpire) {
@@ -275,7 +372,9 @@ async function signWbi(params) {
   params.wts = wts;
   const sortedKeys = Object.keys(params).sort();
   const query = sortedKeys.map(function(k) {
-    return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    // Filter out !'()* characters from values before signing (Bilibili WBI requirement)
+    var filteredVal = String(params[k]).replace(/[!'()*]/g, '');
+    return encodeURIComponent(k) + '=' + encodeURIComponent(filteredVal);
   }).join('&');
   const w_rid = md5(query + mixinKey);
   return query + '&w_rid=' + w_rid;
@@ -294,10 +393,56 @@ function upgradeCdn(url) {
     const u = new URL(url);
     if (/mirror/.test(u.hostname)) return url;
     u.hostname = MIRROR_CDNS[cdnIndex % MIRROR_CDNS.length];
+    if (u.port === '8082') u.port = '';
     cdnIndex++;
     return u.toString();
   } catch(e) { return url; }
 }
+
+// --- Connect-based streaming fetch proxy (zero-copy via transfer) ---
+chrome.runtime.onConnect.addListener(function(port) {
+  if (port.name !== 'fetchProxy') return;
+  console.log('[Bilibili Ext BG] Connect opened for fetchProxy');
+  port.onMessage.addListener(async function(msg) {
+    if (msg.type !== 'fetchProxy') return;
+    console.log('[Bilibili Ext BG] fetchProxy req', msg.reqId, msg.url.substring(0,80));
+    try {
+      var opts = msg.options || {};
+      var headers = {};
+      if (opts.headers && typeof opts.headers === 'object') {
+        for (var k in opts.headers) { headers[k] = opts.headers[k]; }
+      }
+      var resp = await fetch(msg.url, {
+        method: opts.method || 'GET',
+        headers: headers
+      });
+      console.log('[Bilibili Ext BG] fetch status', msg.reqId, resp.status);
+      var reader = resp.body.getReader();
+      var headerEntries = {};
+      resp.headers.forEach(function(v, k) { headerEntries[k] = v; });
+      port.postMessage({
+        reqId: msg.reqId,
+        ok: true,
+        status: resp.status,
+        headers: headerEntries
+      });
+      var chunkCount = 0;
+      while (true) {
+        var result = await reader.read();
+        if (result.done) {
+          console.log('[Bilibili Ext BG] fetch done', msg.reqId, 'chunks=', chunkCount);
+          port.postMessage({ reqId: msg.reqId, done: true });
+          break;
+        }
+        chunkCount++;
+        port.postMessage({ reqId: msg.reqId, chunk: result.value.buffer }, [result.value.buffer]);
+      }
+    } catch (err) {
+      console.error('[Bilibili Ext BG] fetchProxy err', msg.reqId, err.message);
+      port.postMessage({ reqId: msg.reqId, ok: false, error: err.message });
+    }
+  });
+});
 
 // --- Message handling from popup/content-script ---
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -343,7 +488,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'getDashUrl') {
+  if (msg.type === 'testWbi') {
     chrome.storage.local.get(['sessdata', 'buvid3'], async (data) => {
       const sessdata = data.sessdata;
       const buvid3 = data.buvid3 || generateBuvid3();
@@ -353,38 +498,133 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       try {
         const params = {
-          bvid: msg.bvid,
-          cid: String(msg.cid),
-          qn: String(msg.qn || 80),
-          fnval: String(msg.fnval || 16),
+          bvid: msg.bvid || 'BV1R1e4zKEh1',
+          cid: String(msg.cid || 31870356198),
+          qn: String(msg.qn || 120),
+          fnval: String(msg.fnval || 4048),
           fnver: '0',
-          fourk: '1',
-          platform: 'html5'
+          fourk: '1'
         };
         const signedQuery = await signWbi(params);
         const url = 'https://api.bilibili.com/x/player/wbi/playurl?' + signedQuery;
-        console.log('[Bilibili Ext BG] getDashUrl request:', url.substring(0, 120));
+        console.log('[Bilibili Ext BG] testWbi request:', url.substring(0, 120));
         const resp = await fetch(url, {
           headers: {
             'User-Agent': UA,
             'Referer': 'https://www.bilibili.com',
-            'Origin': 'https://www.bilibili.com',
-            'Cookie': 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata
+            'Cookie': 'SESSDATA=' + sessdata
           }
         });
         const json = await resp.json();
-        console.log('[Bilibili Ext BG] getDashUrl response code:', json.code, 'message:', json.message);
+        console.log('[Bilibili Ext BG] testWbi response code:', json.code, 'message:', json.message);
+        sendResponse({
+          ok: true,
+          code: json.code,
+          message: json.message,
+          dataKeys: json.data ? Object.keys(json.data) : [],
+          quality: json.data?.quality,
+          acceptQuality: json.data?.accept_quality,
+          acceptDescription: json.data?.accept_description,
+          hasDash: !!json.data?.dash,
+          dashVideoCount: json.data?.dash?.video?.length || 0,
+          dashAudioCount: json.data?.dash?.audio?.length || 0,
+          durlCount: json.data?.durl?.length || 0,
+          rawData: JSON.stringify(json.data).substring(0, 1000)
+        });
+      } catch (err) {
+        console.error('[Bilibili Ext BG] testWbi exception:', err);
+        sendResponse({ok: false, error: err.message});
+      }
+    });
+    return true;
+  }
+
+  if (msg.type === 'fetchProxy') {
+    (async () => {
+      try {
+        var opts = msg.options || {};
+        var headers = {};
+        if (opts.headers && typeof opts.headers === 'object') {
+          for (var k in opts.headers) { headers[k] = opts.headers[k]; }
+        }
+        var resp = await fetch(msg.url, {
+          method: opts.method || 'GET',
+          headers: headers
+        });
+        var data = await resp.arrayBuffer();
+        var headerEntries = {};
+        resp.headers.forEach(function(v, k) { headerEntries[k] = v; });
+        sendResponse({ ok: true, status: resp.status, headers: headerEntries, data: data });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'getDashUrl') {
+    chrome.storage.local.get(['sessdata', 'buvid3'], async (data) => {
+      const sessdata = data.sessdata;
+      const buvid3 = data.buvid3 || generateBuvid3();
+      // Cache for webRequest sync access
+      cachedCookie = buvid3 && sessdata ? 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata : '';
+      currentBvid = msg.bvid || '';
+      console.log('[Bilibili Ext BG] webRequest cache set, bvid=' + currentBvid + ' cookie_len=' + cachedCookie.length);
+      if (!sessdata) {
+        sendResponse({ok: false, error: 'not_logged_in'});
+        return;
+      }
+      try {
+        // Strategy 1: Parse __playinfo__ from Bilibili official page (most reliable for DASH)
+        // Must pass SESSDATA to get HD/4K playinfo, otherwise only low quality is returned
+        let playinfo = await getPlayInfoFromPage(msg.bvid, sessdata);
+        let json = null;
+        if (playinfo && playinfo.code === 0 && playinfo.data && playinfo.data.dash) {
+          json = playinfo;
+          console.log('[Bilibili Ext BG] Using __playinfo__ from page, quality:', json.data.quality);
+        } else {
+          // Strategy 2: Fallback to WBI API
+          // Match original backend parameters exactly (no 'platform' param)
+          const params = {
+            bvid: msg.bvid,
+            cid: String(msg.cid),
+            qn: String(msg.qn || 80),
+            fnval: String(msg.fnval || 4048),
+            fnver: '0',
+            fourk: '1'
+          };
+          const signedQuery = await signWbi(params);
+          const url = 'https://api.bilibili.com/x/player/wbi/playurl?' + signedQuery;
+          console.log('[Bilibili Ext BG] getDashUrl WBI request:', url);
+          const resp = await fetch(url, {
+            headers: {
+              'User-Agent': UA,
+              'Referer': 'https://www.bilibili.com',
+              'Cookie': 'SESSDATA=' + sessdata
+            }
+          });
+          json = await resp.json();
+          console.log('[Bilibili Ext BG] getDashUrl WBI response code:', json.code, 'message:', json.message);
+        }
+
+        if (!json) {
+          sendResponse({ok: false, error: 'api_error: failed to get play info'});
+          return;
+        }
+
+        console.log('[Bilibili Ext BG] getDashUrl raw data keys:', json.data ? Object.keys(json.data).join(',') : 'no data');
         if (json.code === -101) {
           sendResponse({ok: false, error: 'login_expired'});
           return;
         }
         if (json.code !== 0) {
-          sendResponse({ok: false, error: 'api_error: ' + (json.message || ('code=' + json.code))});
+          console.log('[Bilibili Ext BG] getDashUrl API error, code:', json.code, 'message:', json.message);
+          sendResponse({ok: false, error: 'api_error: ' + (json.message || ('code=' + json.code)), code: json.code, raw: JSON.stringify(json).substring(0, 500)});
           return;
         }
         const dash = json.data && json.data.dash;
         if (!dash) {
-          console.log('[Bilibili Ext BG] getDashUrl no dash data, data:', JSON.stringify(json.data).substring(0, 200));
+          console.log('[Bilibili Ext BG] getDashUrl no dash data, data:', JSON.stringify(json.data).substring(0, 500));
           sendResponse({ok: false, error: 'api_error: no dash data'});
           return;
         }
@@ -423,7 +663,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           quality: quality,
           codecs: {v: videoStream.codecs, a: audioStream.codecs},
           width: videoStream.width,
-          height: videoStream.height
+          height: videoStream.height,
+          acceptQuality: json.data.accept_quality || [],
+          acceptDescription: json.data.accept_description || []
         });
       } catch (err) {
         console.error('[Bilibili Ext BG] getDashUrl exception:', err);

@@ -9,8 +9,6 @@
     signalCount++;
     console.log('[Bilibili Ext] Signaling player page (attempt ' + signalCount + '/' + MAX_SIGNALS + ')');
 
-    // Query background for full status FIRST, then send a single consolidated message.
-    // This avoids the race condition where player sees 'installed' but misses delayed 'status'.
     chrome.runtime.sendMessage({ type: 'getStatus' }, function(status) {
       var payload = {
         source: 'bilibili-player-extension',
@@ -26,20 +24,16 @@
     });
   }
 
-  // Signal at intervals to ensure player listener is ready
-  signal();           // t=0 (document_start)
+  signal();
   setTimeout(signal, 300);
   setTimeout(signal, 800);
   setTimeout(signal, 1500);
   setTimeout(signal, 3000);
 
-  // Respond to pings from the player page (active detection)
   window.addEventListener('message', function(event) {
     if (event.data && event.data.source === 'bilibili-player' && event.data.type === 'ping') {
       console.log('[Bilibili Ext] Received ping from player, responding with full status...');
-      signalCount = 0; // reset count so we always respond to pings
-
-      // Query background and send consolidated status (same as signal())
+      signalCount = 0;
       chrome.runtime.sendMessage({ type: 'getStatus' }, function(status) {
         var payload = {
           source: 'bilibili-player-extension',
@@ -56,7 +50,7 @@
     }
   });
 
-  // --- DASH URL forwarding: request from player page, forward to background, send back ---
+  // --- DASH URL forwarding ---
   window.addEventListener('message', function(event) {
     if (!event.data || event.data.source !== 'bilibili-player') return;
 
@@ -67,8 +61,9 @@
         bvid: event.data.bvid,
         cid: event.data.cid,
         qn: event.data.qn,
-        fnval: event.data.fnval || 16
+        fnval: event.data.fnval || 4048
       }, function(resp) {
+        console.log('[Bilibili Ext] getDashUrl response ok='+(resp&&resp.ok)+' error='+(resp&&resp.error)+' code='+(resp&&resp.code)+' url='+(resp&&resp.url));
         window.postMessage({
           source: 'bilibili-player-extension',
           type: 'dashUrl',
@@ -80,9 +75,64 @@
           codecs: resp ? resp.codecs : null,
           width: resp ? resp.width : 0,
           height: resp ? resp.height : 0,
-          error: resp ? resp.error : 'no_response'
+          acceptQuality: resp ? resp.acceptQuality : null,
+          acceptDescription: resp ? resp.acceptDescription : null,
+          error: resp ? resp.error : 'no_response',
+          code: resp ? resp.code : undefined,
+          raw: resp ? resp.raw : undefined
         }, '*');
       });
+    }
+  });
+
+  // --- Streaming fetch proxy via chrome.runtime.connect ---
+  var bgPort = null;
+  function getBgPort() {
+    if (!bgPort) {
+      bgPort = chrome.runtime.connect({ name: 'fetchProxy' });
+      bgPort.onDisconnect.addListener(function() { bgPort = null; });
+    }
+    return bgPort;
+  }
+
+  window.addEventListener('message', function(event) {
+    if (!event.data || event.data.source !== 'bilibili-player') return;
+
+    if (event.data.type === 'fetchProxy') {
+      var reqId = event.data.reqId;
+      console.log('[Bilibili Ext CS] fetchProxy from page', reqId, event.data.url.substring(0,80));
+      var port = getBgPort();
+
+      port.postMessage({
+        type: 'fetchProxy',
+        reqId: reqId,
+        url: event.data.url,
+        options: event.data.options
+      });
+
+      var listener = function(msg) {
+        if (msg.reqId !== reqId) return;
+        console.log('[Bilibili Ext CS] bg->page', reqId, 'ok=', msg.ok, 'chunk=', !!msg.chunk, 'done=', !!msg.done);
+
+        if (msg.done || msg.error || msg.ok === false) {
+          port.onMessage.removeListener(listener);
+        }
+
+        var transferList = msg.chunk ? [msg.chunk] : undefined;
+        window.postMessage({
+          source: 'bilibili-player-extension',
+          type: 'fetchProxyResponse',
+          reqId: reqId,
+          ok: msg.ok,
+          status: msg.status,
+          headers: msg.headers,
+          chunk: msg.chunk,
+          done: msg.done,
+          error: msg.error
+        }, '*', transferList);
+      };
+
+      port.onMessage.addListener(listener);
     }
   });
 
@@ -90,7 +140,6 @@
   var url = window.location.href;
   if (url.indexOf('/bilibili-player/embed') > -1 ||
       url.indexOf('/console/bilibili-player') > -1) {
-    // Get login status for the connection record
     chrome.runtime.sendMessage({ type: 'getStatus' }, function(status) {
       try {
         chrome.storage.local.set({
