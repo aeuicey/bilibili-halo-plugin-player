@@ -488,7 +488,7 @@ chrome.runtime.onConnect.addListener(function(port) {
           break;
         }
         chunkCount++;
-        port.postMessage({ reqId: msg.reqId, chunk: result.value.buffer }, [result.value.buffer]);
+        port.postMessage({ reqId: msg.reqId, chunk: result.value.buffer });
       }
     } catch (err) {
       console.error('[Bilibili Ext BG] fetchProxy err', msg.reqId, err.message);
