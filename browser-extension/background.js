@@ -413,8 +413,9 @@ chrome.runtime.onConnect.addListener(function(port) {
         for (var k in opts.headers) { headers[k] = opts.headers[k]; }
       }
       // Inject Referer/Origin/Cookie manually (webRequestBlocking doesn't work in MV3)
-      var storage = await chrome.storage.local.get(['sessdata', 'buvid3']);
-      var referer = currentBvid ? 'https://www.bilibili.com/video/' + currentBvid + '/' : 'https://www.bilibili.com';
+      var storage = await chrome.storage.local.get(['sessdata', 'buvid3', 'currentBvid']);
+      var bvid = currentBvid || storage.currentBvid || '';
+      var referer = bvid ? 'https://www.bilibili.com/video/' + bvid + '/' : 'https://www.bilibili.com';
       headers['Referer'] = referer;
       headers['Origin'] = 'https://www.bilibili.com';
       if (storage.sessdata) {
@@ -564,6 +565,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (opts.headers && typeof opts.headers === 'object') {
           for (var k in opts.headers) { headers[k] = opts.headers[k]; }
         }
+        var storage = await chrome.storage.local.get(['sessdata', 'buvid3', 'currentBvid']);
+        var bvid = currentBvid || storage.currentBvid || '';
+        headers['Referer'] = bvid ? 'https://www.bilibili.com/video/' + bvid + '/' : 'https://www.bilibili.com';
+        headers['Origin'] = 'https://www.bilibili.com';
+        if (storage.sessdata) {
+          headers['Cookie'] = 'buvid3=' + (storage.buvid3 || '') + '; SESSDATA=' + storage.sessdata;
+        }
         var resp = await fetch(msg.url, {
           method: opts.method || 'GET',
           headers: headers
@@ -586,7 +594,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Cache for webRequest sync access
       cachedCookie = buvid3 && sessdata ? 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata : '';
       currentBvid = msg.bvid || '';
-      console.log('[Bilibili Ext BG] webRequest cache set, bvid=' + currentBvid + ' cookie_len=' + cachedCookie.length);
+      chrome.storage.local.set({ currentBvid: currentBvid });
+      console.log('[Bilibili Ext BG] cache set, bvid=' + currentBvid + ' cookie_len=' + cachedCookie.length);
       if (!sessdata) {
         sendResponse({ok: false, error: 'not_logged_in'});
         return;
