@@ -388,15 +388,15 @@ const MIRROR_CDNS = [
   'upos-sz-mirrorbd.bilivideo.com'
 ];
 let cdnIndex = 0;
-function upgradeCdn(url) {
-  try {
-    const u = new URL(url);
-    if (/mirror/.test(u.hostname)) return url;
-    u.hostname = MIRROR_CDNS[cdnIndex % MIRROR_CDNS.length];
-    if (u.port === '8082') u.port = '';
-    cdnIndex++;
-    return u.toString();
-  } catch(e) { return url; }
+function sanitizeCdnUrl(url) {
+  if (!url) return url;
+  // Remove :8082 port
+  url = url.replace(':8082/', '/');
+  // Replace mcdn/p2p CDN domains with standard upos CDN (P2P CDN is not accessible in browser)
+  if (/mcdn\.bilivideo\.cn|p2p\.bilivideo\.cn|pcdn\.bilivideo\.cn/.test(url)) {
+    url = url.replace(/^https:\/\/[^\/]+/, 'https://upos-sz-mirrorcos.bilivideo.com');
+  }
+  return url;
 }
 
 // --- Connect-based streaming fetch proxy (zero-copy via transfer) ---
@@ -679,8 +679,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ok: false, error: 'api_error: missing video or audio stream'});
           return;
         }
-        const videoUrl = videoStream.baseUrl || videoStream.base_url;
-        const audioUrl = audioStream.baseUrl || audioStream.base_url;
+        const videoUrl = sanitizeCdnUrl(videoStream.baseUrl || videoStream.base_url);
+        const audioUrl = sanitizeCdnUrl(audioStream.baseUrl || audioStream.base_url);
         console.log('[Bilibili Ext BG] getDashUrl success, quality:', quality, 'v:', videoUrl.substring(0, 60), 'a:', audioUrl.substring(0, 60));
         sendResponse({
           ok: true,
