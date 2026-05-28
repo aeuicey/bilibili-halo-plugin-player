@@ -399,6 +399,41 @@ function sanitizeCdnUrl(url) {
   return url;
 }
 
+// --- CDN speed test: pick fastest URL from candidates ---
+async function speedTestUrls(urls, referer, cookie) {
+  if (!urls || urls.length <= 1) return urls[0];
+  var headers = { 'Referer': referer, 'Origin': 'https://www.bilibili.com' };
+  if (cookie) headers['Cookie'] = cookie;
+  var tests = urls.map(function(url) {
+    return new Promise(function(resolve) {
+      var start = performance.now();
+      var ctrl = new AbortController();
+      var to = setTimeout(function() { ctrl.abort(); }, 3000);
+      fetch(url, { method: 'GET', headers: headers, signal: ctrl.signal, cache: 'no-store' })
+        .then(function(resp) {
+          clearTimeout(to);
+          var ttfb = performance.now() - start;
+          if (resp.ok || resp.status === 206) {
+            var reader = resp.body.getReader();
+            return reader.read().then(function(result) {
+              reader.cancel();
+              resolve({ url: url, ttfb: ttfb, ok: true });
+            });
+          }
+          resolve({ url: url, ttfb: Infinity, ok: false });
+        })
+        .catch(function() {
+          clearTimeout(to);
+          resolve({ url: url, ttfb: Infinity, ok: false });
+        });
+    });
+  });
+  var results = await Promise.all(tests);
+  results.sort(function(a, b) { return a.ttfb - b.ttfb; });
+  console.log('[Bilibili Ext BG] speedTest results:', results.map(function(r) { return r.url.substring(0,40) + ' ttfb=' + Math.round(r.ttfb); }).join(', '));
+  return results[0] && results[0].ok ? results[0].url : urls[0];
+}
+
 // --- Connect-based streaming fetch proxy (zero-copy via transfer) ---
 chrome.runtime.onConnect.addListener(function(port) {
   if (port.name !== 'fetchProxy') return;
@@ -679,12 +714,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ok: false, error: 'api_error: missing video or audio stream'});
           return;
         }
-        const videoUrl = sanitizeCdnUrl(videoStream.baseUrl || videoStream.base_url);
-        const audioUrl = sanitizeCdnUrl(
+        // Collect all candidate video URLs
+        var videoCandidates = [];
+        if (videoStream.baseUrl) videoCandidates.push(sanitizeCdnUrl(videoStream.baseUrl));
+        if (videoStream.base_url) videoCandidates.push(sanitizeCdnUrl(videoStream.base_url));
+        if (videoStream.backupUrl) videoStream.backupUrl.forEach(function(u) { videoCandidates.push(sanitizeCdnUrl(u)); });
+        if (videoStream.backup_url) videoStream.backup_url.forEach(function(u) { videoCandidates.push(sanitizeCdnUrl(u)); });
+        videoCandidates = videoCandidates.filter(function(u, i, a) { return a.indexOf(u) === i; });
+
+        var audioUrl = sanitizeCdnUrl(
           (audioStream.backupUrl && audioStream.backupUrl[0]) ||
           (audioStream.backup_url && audioStream.backup_url[0]) ||
           audioStream.baseUrl || audioStream.base_url
         );
+
+        // Speed test video URLs
+        var referer = currentBvid ? 'https://www.bilibili.com/video/' + currentBvid + '/' : 'https://www.bilibili.com';
+        var testCookie = buvid3 && sessdata ? 'buvid3=' + buvid3 + '; SESSDATA=' + sessdata : '';
+        var videoUrl = await speedTestUrls(videoCandidates, referer, testCookie);
+
         console.log('[Bilibili Ext BG] getDashUrl success, quality:', quality, 'v:', videoUrl.substring(0, 60), 'a:', audioUrl.substring(0, 60));
         sendResponse({
           ok: true,
