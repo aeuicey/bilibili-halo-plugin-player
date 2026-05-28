@@ -118,7 +118,6 @@
           port.onMessage.removeListener(listener);
         }
 
-        var transferList = msg.chunk ? [msg.chunk] : undefined;
         window.postMessage({
           source: 'bilibili-player-extension',
           type: 'fetchProxyResponse',
@@ -129,7 +128,7 @@
           chunk: msg.chunk,
           done: msg.done,
           error: msg.error
-        }, '*', transferList);
+        }, '*');
       };
 
       port.onMessage.addListener(listener);
