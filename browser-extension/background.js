@@ -679,8 +679,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ok: false, error: 'api_error: missing video or audio stream'});
           return;
         }
-        const videoUrl = upgradeCdn(videoStream.baseUrl || videoStream.base_url);
-        const audioUrl = upgradeCdn(audioStream.baseUrl || audioStream.base_url);
+        const videoUrl = videoStream.baseUrl || videoStream.base_url;
+        const audioUrl = audioStream.baseUrl || audioStream.base_url;
         console.log('[Bilibili Ext BG] getDashUrl success, quality:', quality, 'v:', videoUrl.substring(0, 60), 'a:', audioUrl.substring(0, 60));
         sendResponse({
           ok: true,
