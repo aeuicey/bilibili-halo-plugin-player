@@ -680,7 +680,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const videoUrl = sanitizeCdnUrl(videoStream.baseUrl || videoStream.base_url);
-        const audioUrl = sanitizeCdnUrl(audioStream.baseUrl || audioStream.base_url);
+        const audioUrl = sanitizeCdnUrl(
+          (audioStream.backupUrl && audioStream.backupUrl[0]) ||
+          (audioStream.backup_url && audioStream.backup_url[0]) ||
+          audioStream.baseUrl || audioStream.base_url
+        );
         console.log('[Bilibili Ext BG] getDashUrl success, quality:', quality, 'v:', videoUrl.substring(0, 60), 'a:', audioUrl.substring(0, 60));
         sendResponse({
           ok: true,
