@@ -417,6 +417,14 @@ chrome.runtime.onConnect.addListener(function(port) {
         headers: headers
       });
       console.log('[Bilibili Ext BG] fetch status', msg.reqId, resp.status);
+      if (!resp.ok) {
+        port.postMessage({ reqId: msg.reqId, ok: false, status: resp.status, error: 'HTTP ' + resp.status });
+        return;
+      }
+      if (!resp.body) {
+        port.postMessage({ reqId: msg.reqId, ok: false, status: resp.status, error: 'HTTP ' + resp.status + ' (no body)' });
+        return;
+      }
       var reader = resp.body.getReader();
       var headerEntries = {};
       resp.headers.forEach(function(v, k) { headerEntries[k] = v; });
