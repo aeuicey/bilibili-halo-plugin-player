@@ -25,11 +25,15 @@ import {
   IconRefreshLine,
 } from '@halo-dev/components'
 import RiQrCodeLine from '~icons/ri/qr-code-line'
+import {
+  API_BASE as API,
+  formatNum,
+  parseBvid,
+  parseData,
+  proxyImage,
+} from '@/utils/bilibili'
 
-const API = '/plugins/bilibili-player/api'
 const EMBED_PATH = '/plugins/bilibili-player/embed'
-const BVID_REGEX = /BV[a-zA-Z0-9]{10}/
-const AVID_REGEX = /av(\d+)/i
 
 /* ---------- Tabs ---------- */
 type TabId = 'login' | 'embed' | 'logs'
@@ -300,16 +304,6 @@ async function doLogout() {
 }
 
 /* ---------- Embed logic ---------- */
-function parseBvid(input: string) {
-  const trimmed = (input || '').trim()
-  if (!trimmed) return null
-  const m = trimmed.match(BVID_REGEX)
-  if (m) return { bvid: m[0], cid: '' }
-  const a = trimmed.match(AVID_REGEX)
-  if (a) return { bvid: 'av' + a[1], cid: '' }
-  return null
-}
-
 function extractResolution(playData: unknown) {
   const data = playData as { dash?: { video?: Array<{ width?: number; height?: number }> } } | null
   const track = data?.dash?.video?.[0]
@@ -317,28 +311,6 @@ function extractResolution(playData: unknown) {
     width: Number(track?.width) > 0 ? Number(track?.width) : 0,
     height: Number(track?.height) > 0 ? Number(track?.height) : 0,
   }
-}
-
-function parseData<T = unknown>(data: unknown): T {
-  return (typeof data === 'string' ? JSON.parse(data) : data) as T
-}
-
-function proxyImage(url: string | undefined | null): string {
-  if (!url) return ''
-  // B站图片 CDN 常为 HTTP，升级为 HTTPS 避免混合内容 + 重定向
-  let secure = url.startsWith('http://') ? 'https://' + url.substring(7) : url
-  // 添加 @ 后缀获取适合卡片展示的缩略图尺寸，减少流量
-  if (!secure.includes('@') && (secure.includes('hdslb.com') || secure.includes('bilibili.com'))) {
-    secure = secure + '@320w_200h_1e_1c'
-  }
-  return `${API}/video/proxy?url=${encodeURIComponent(secure)}`
-}
-
-function formatNum(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '0'
-  if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, '') + '亿'
-  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, '') + '万'
-  return String(n)
 }
 
 const faceSrc = computed(() =>

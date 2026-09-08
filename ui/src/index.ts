@@ -48,4 +48,16 @@ export default definePlugin({
       },
     },
   ],
+  extensionPoints: {
+    'default:editor:extension:create': async () => {
+      // 懒加载 + 兜底：扩展加载失败不应阻塞编辑器
+      try {
+        const { ExtensionBilibiliPlayer } = await import('./editor/bilibili-player')
+        return [ExtensionBilibiliPlayer]
+      } catch (e) {
+        console.error('[bilibili-player] 加载编辑器扩展失败', e)
+        return []
+      }
+    },
+  },
 })

@@ -2,6 +2,13 @@
 
 > 调研时间：2026-09。结论：**集成完全可行，模式已被社区插件验证**。本文档沉淀调研结论与推荐设计，供后续实现参考。
 
+> **已实现（2026-09）**：第五节推荐设计已落地，最终形态与 MVP 骨架基本一致：
+>
+> - `ui/src/editor/bilibili-player/index.ts` — `ExtensionBilibiliPlayer`（`Node.create`，name `bilibili-player`，`group: 'block'` + `atom: true`），attrs `bvid/cid/width/height` 全部序列化到 `data-*`，`parseHTML` 接管存量 `div[data-bilibili-player]` 嵌入代码（自动升级为可编辑节点），`renderHTML` 输出带真实 `aspect-ratio` 的 div+iframe；`getToolboxItems` / `getCommandMenuItems` 双入口齐备
+> - `ui/src/editor/bilibili-player/BilibiliPlayerView.vue` — `VueNodeViewRenderer` NodeView：有 bvid 时渲染封面/标题/UP 主卡片（双击重开配置），空节点自动弹出 `VModal` 配置弹窗（解析 BV/链接 → 分 P 选择 → playurl 取分辨率 → `updateAttributes` 写回）
+> - `ui/src/index.ts` 通过 `extensionPoints['default:editor:extension:create']` 注册，动态 import + try/catch 兜底（失败返回空数组，不阻塞编辑器）
+> - 解析工具函数抽取至 `ui/src/utils/bilibili.ts`，与 HomeView 共享
+
 ## 一、历史考古：本项目曾有的编辑器扩展
 
 仓库历史中存活过一个编辑器扩展 `ui/src/editor/BilibiliPlayerNode.ts`（新增于 `28b9cb8`，删除于 `1776832`，期间从未修改）：

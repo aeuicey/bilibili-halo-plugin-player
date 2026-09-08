@@ -51,8 +51,11 @@ cd ui && pnpm prettier
 
 ### Frontend (Vue 3 + TypeScript / Vite / pnpm)
 
-- **`ui/src/index.ts`** — Plugin entry: registers admin routes (sidebar + plugin config tab)
-- **`ui/src/views/HomeView.vue`** — Main admin panel, Halo-native design: `VPageHeader` (login status `VStatusDot` + logout in `#actions`) + `VTabbar` with 3 tabs — 账号登录 (QR flow, `VLoading`/`VStatusDot`/`VAlert`, account info via `VAvatar`+`VDescription`) / 视频嵌入 (parse BV/link, multi-P select, resolution & orientation detection, minimal iframe code + collapsible size settings, copy via `Toast`) / 运行日志 (history + `EventSource` SSE with 2s polling fallback, level filter, `VSwitch` autoscroll). Uses `axiosInstance` from `@halo-dev/api-client` (never bare axios), site URL from `stores.globalInfo().externalUrl` with origin fallback, `Dialog.warning` for logout confirm. All styles scoped with `.bp-` prefix, 4px radius, no global `:root` variables.
+- **`ui/src/index.ts`** — Plugin entry: registers admin routes (sidebar + plugin config tab) and `extensionPoints['default:editor:extension:create']` (dynamic import + try/catch fallback returning `[]`)
+- **`ui/src/views/HomeView.vue`** — Main admin panel, Halo-native design: `VPageHeader` (login status `VStatusDot` + logout in `#actions`) + `VTabbar` with 3 tabs — 账号登录 (QR flow, `VLoading`/`VStatusDot`/`VAlert`, account info via `VAvatar`+`VDescription`) / 视频嵌入 (four VCard sections: 视频源 / 视频信息 / 尺寸与样式 with segmented width presets + aspect-ratio preview / 嵌入代码 with copy via `Toast`) / 运行日志 (history + `EventSource` SSE with 2s polling fallback, level filter, `VSwitch` autoscroll). Uses `axiosInstance` from `@halo-dev/api-client` (never bare axios), site URL from `stores.globalInfo().externalUrl` with origin fallback, `Dialog.warning` for logout confirm. All styles scoped with `.bp-` prefix, 4px radius, no global `:root` variables.
+- **`ui/src/utils/bilibili.ts`** — Shared helpers used by HomeView and the editor extension: `API_BASE`, `parseBvid` (BV/av/link), `parseData` (stringified-JSON tolerant), `proxyImage`, `formatNum`
+- **`ui/src/editor/bilibili-player/index.ts`** — Editor extension `ExtensionBilibiliPlayer`: TipTap `Node` (name `bilibili-player`, block + atom) with `bvid/cid/width/height` attrs serialized to `data-*`; `parseHTML` claims `div[data-bilibili-player]` (legacy embed code upgrades to editable node); `renderHTML` emits div+iframe with real aspect-ratio; toolbox + slash-command entries (`getToolboxItems`/`getCommandMenuItems`). Import editor symbols from `@halo-dev/richtext-editor` only (never `@tiptap/core` directly — version split risk)
+- **`ui/src/editor/bilibili-player/BilibiliPlayerView.vue`** — `VueNodeViewRenderer` NodeView: video card (cover/title/UP via `/api/video/info`) when bvid set, placeholder + auto-open `VModal` config dialog when empty, dblclick re-opens; confirm resolves playurl `dash.video[0]` resolution into `width/height` attrs via `props.updateAttributes`
 
 ### Embed Player (server-generated inline page)
 
@@ -73,7 +76,7 @@ The `/plugins/bilibili-player/embed` endpoint (rendered by `EmbedPageGenerator`)
 - **Login flow**: QR code generation → poll every 2s → extracted `SESSDATA` from redirect URL params → persisted to file → restored on restart
 - **Resolution detection**: embed code uses actual `width/height` from DASH tracks for `aspect-ratio`, not hardcoded 16/9
 - **Quality levels**: QN < 80 → muxed MP4 (single `<video>`), QN ≥ 80 → DASH (dual-element sync)
-- **Embed iframe**: minimal `<iframe>` by default; optional collapsible "尺寸设置" panel generates `<div data-bilibili-player>` wrapper with custom `max-width` and aspect-ratio from DASH tracks
+- **Embed iframe**: minimal `<iframe>` at 100% preset; other width presets generate `<div data-bilibili-player>` wrapper with `max-width` and aspect-ratio from DASH tracks; editor extension parses the same wrapper into an editable node
 
 ### Halo Plugin Conventions
 
