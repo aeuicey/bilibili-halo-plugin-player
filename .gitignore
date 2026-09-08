@@ -32,3 +32,6 @@ workplace/
 
 # Logs
 *.log
+
+# Local portable JDK (dev environment)
+.jdk/

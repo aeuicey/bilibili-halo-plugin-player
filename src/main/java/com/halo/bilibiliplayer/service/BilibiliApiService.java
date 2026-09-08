@@ -25,6 +25,9 @@ public class BilibiliApiService {
     private static final String QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
     private static final String QRCODE_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
     private static final String PLAYURL_URL = "https://api.bilibili.com/x/player/wbi/playurl";
+    // fnval 位掩码：16=DASH, 128=4K, 1024=8K, 2048=AV1。
+    // 不传 64(HDR)/256(杜比音频)/512(杜比视界)：这些流是 HEVC/Dolby-only，浏览器原生 <video> 基本解不动
+    private static final int FNVAL_FULL = 3344;
     private static final Path DATA_DIR = Paths.get(System.getProperty("user.home"), ".halo-bilibili-player");
 
     private final HttpClient httpClient;
@@ -403,7 +406,102 @@ public class BilibiliApiService {
 
     public String getVideoPlayUrl(String bvid, String cid, int qn, int fnval) throws Exception {
         log.info("获取视频播放地址: bvid={}, cid={}, qn={}, fnval={}", bvid, cid, qn, fnval);
+        JsonNode data = requestPlayUrl(bvid, cid, qn, fnval, null);
+        log.info("播放地址获取成功, quality={}, format={}",
+                data.get("quality").asInt(), data.get("format").asText());
+        return objectMapper.writeValueAsString(parsePlayUrlResponse(data, "explicit"));
+    }
 
+    /**
+     * 降级链获取播放地址（对齐 B 站 Web 端策略）。任一步 code≠0/超时/流为空则进下一步：
+     *   ① fnval=3344, qn=127  全量 DASH（4K/8K/AV1 常规流，大会员登录下可拿高清）
+     *   ② fnval=16,  qn=80   基础 DASH
+     *   ③ fnval=1,   qn=64   durl MP4 单文件（音画同体）
+     *   ④ platform=html5&high_quality=1&fnval=1  无 Referer 鉴权的 1080P MP4 兜底
+     */
+    public String getVideoPlayUrlWithFallback(String bvid, String cid) throws Exception {
+        log.info("获取播放地址(降级链): bvid={}, cid={}", bvid, cid);
+        String lastError = "";
+
+        // ① 全量 DASH
+        try {
+            JsonNode data = requestPlayUrl(bvid, cid, 127, FNVAL_FULL, null);
+            Map<String, Object> parsed = parsePlayUrlResponse(data, "dash-full");
+            if (hasDash(parsed)) {
+                log.info("降级链①成功: fnval=3344 qn=127 quality={}", parsed.get("quality"));
+                return objectMapper.writeValueAsString(parsed);
+            }
+            log.warn("降级链①失败: dash 为空, 尝试下一步");
+        } catch (Exception e) {
+            lastError = e.getMessage();
+            log.warn("降级链①异常: {}, 尝试下一步", e.getMessage());
+        }
+
+        // ② 基础 DASH
+        try {
+            JsonNode data = requestPlayUrl(bvid, cid, 80, 16, null);
+            Map<String, Object> parsed = parsePlayUrlResponse(data, "dash-basic");
+            if (hasDash(parsed)) {
+                log.info("降级链②成功: fnval=16 qn=80 quality={}", parsed.get("quality"));
+                return objectMapper.writeValueAsString(parsed);
+            }
+            log.warn("降级链②失败: dash 为空, 尝试下一步");
+        } catch (Exception e) {
+            lastError = e.getMessage();
+            log.warn("降级链②异常: {}, 尝试下一步", e.getMessage());
+        }
+
+        // ③ MP4 单文件
+        try {
+            JsonNode data = requestPlayUrl(bvid, cid, 64, 1, null);
+            Map<String, Object> parsed = parsePlayUrlResponse(data, "mp4");
+            if (hasDurl(parsed)) {
+                log.info("降级链③成功: fnval=1 qn=64 MP4 quality={}", parsed.get("quality"));
+                return objectMapper.writeValueAsString(parsed);
+            }
+            log.warn("降级链③失败: durl 为空, 尝试下一步");
+        } catch (Exception e) {
+            lastError = e.getMessage();
+            log.warn("降级链③异常: {}, 尝试下一步", e.getMessage());
+        }
+
+        // ④ html5 平台 1080P MP4 兜底
+        try {
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("platform", "html5");
+            extra.put("high_quality", 1);
+            JsonNode data = requestPlayUrl(bvid, cid, 80, 1, extra);
+            Map<String, Object> parsed = parsePlayUrlResponse(data, "mp4-html5");
+            if (hasDurl(parsed)) {
+                log.info("降级链④成功: platform=html5 high_quality=1 MP4 quality={}", parsed.get("quality"));
+                return objectMapper.writeValueAsString(parsed);
+            }
+            log.error("降级链④失败: durl 为空，所有策略均不可用");
+        } catch (Exception e) {
+            lastError = e.getMessage();
+            log.error("降级链④异常: {}", e.getMessage());
+        }
+
+        throw new RuntimeException("所有清晰度降级策略均失败" + (lastError.isEmpty() ? "" : ": " + lastError));
+    }
+
+    private static boolean hasDash(Map<String, Object> parsed) {
+        Object dash = parsed.get("dash");
+        if (!(dash instanceof Map)) return false;
+        Object video = ((Map<?, ?>) dash).get("video");
+        Object audio = ((Map<?, ?>) dash).get("audio");
+        return video instanceof List && !((List<?>) video).isEmpty()
+                && audio instanceof List && !((List<?>) audio).isEmpty();
+    }
+
+    private static boolean hasDurl(Map<String, Object> parsed) {
+        Object durl = parsed.get("durl");
+        return durl instanceof List && !((List<?>) durl).isEmpty();
+    }
+
+    /** 发起一次 playurl 请求（WBI 签名 + SESSDATA/Referer/UA），code≠0 时抛异常。 */
+    private JsonNode requestPlayUrl(String bvid, String cid, int qn, int fnval,
+                                    Map<String, Object> extraParams) throws Exception {
         if (imgKey == null || subKey == null ||
                 System.currentTimeMillis() - lastKeyUpdateTime > 3600000) {
             log.info("刷新WBI签名密钥...");
@@ -417,6 +515,9 @@ public class BilibiliApiService {
         params.put("fnval", fnval);
         params.put("fnver", 0);
         params.put("fourk", 1);
+        if (extraParams != null) {
+            params.putAll(extraParams);
+        }
 
         String signedQuery = WbiSignUtil.signParams(params, imgKey, subKey);
         log.debug("WBI签名完成");
@@ -440,17 +541,17 @@ public class BilibiliApiService {
                     root.has("message") ? root.get("message").asText() : "无");
             throw new RuntimeException("获取视频播放地址失败: " + root.get("message").asText());
         }
-
-        log.info("播放地址获取成功, quality={}, format={}",
-                root.get("data").get("quality").asInt(), root.get("data").get("format").asText());
-        return objectMapper.writeValueAsString(parsePlayUrlResponse(root.get("data")));
+        return root.get("data");
     }
 
-    private Map<String, Object> parsePlayUrlResponse(JsonNode data) {
+    private Map<String, Object> parsePlayUrlResponse(JsonNode data, String strategy) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("quality", data.get("quality").asInt());
         result.put("format", data.get("format").asText());
         result.put("timelength", data.get("timelength").asLong());
+        // 流 URL 约 120 分钟过期，前端据此判断是否需要重取
+        result.put("fetchedAt", System.currentTimeMillis());
+        result.put("strategy", strategy);
 
         List<String> acceptDesc = new ArrayList<>();
         for (JsonNode desc : data.get("accept_description")) {
@@ -464,6 +565,27 @@ public class BilibiliApiService {
         }
         result.put("acceptQuality", acceptQuality);
         result.put("videoCodecid", data.get("video_codecid").asInt());
+
+        // 每个清晰度可用的编码列表（供前端选流参考）
+        if (data.has("support_formats") && data.get("support_formats").isArray()) {
+            List<Map<String, Object>> supportFormats = new ArrayList<>();
+            for (JsonNode sf : data.get("support_formats")) {
+                Map<String, Object> sfm = new LinkedHashMap<>();
+                sfm.put("quality", safeInt(sf, "quality"));
+                sfm.put("format", safeText(sf, "format"));
+                sfm.put("newDescription", safeText(sf, "new_description"));
+                sfm.put("displayDesc", safeText(sf, "display_desc"));
+                List<String> codecs = new ArrayList<>();
+                if (sf.has("codecs") && sf.get("codecs").isArray()) {
+                    for (JsonNode c : sf.get("codecs")) {
+                        codecs.add(c.asText());
+                    }
+                }
+                sfm.put("codecs", codecs);
+                supportFormats.add(sfm);
+            }
+            result.put("supportFormats", supportFormats);
+        }
 
         if (data.has("dash")) {
             JsonNode dash = data.get("dash");
@@ -507,6 +629,14 @@ public class BilibiliApiService {
                 audioList.add(ai);
             }
             dashInfo.put("audio", audioList);
+
+            // 杜比 / Hi-Res 无损音频信息，原样透传给前端
+            if (dash.has("dolby") && !dash.get("dolby").isNull()) {
+                dashInfo.put("dolby", objectMapper.convertValue(dash.get("dolby"), Object.class));
+            }
+            if (dash.has("flac") && !dash.get("flac").isNull()) {
+                dashInfo.put("flac", objectMapper.convertValue(dash.get("flac"), Object.class));
+            }
             result.put("dash", dashInfo);
         }
 
