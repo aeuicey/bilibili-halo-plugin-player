@@ -39,7 +39,10 @@ public class VideoController {
 
     @GetMapping("/plugins/bilibili-player/api/video/info")
     public Mono<String> getVideoInfo(@RequestParam String bvid) {
-        return Mono.fromCallable(() -> bilibiliApiService.getVideoInfo(bvid));
+        return Mono.fromCallable(() -> bilibiliApiService.getVideoInfo(bvid))
+            .onErrorResume(e -> Mono.just(
+                "{\"error\":\"" + e.getMessage().replace("\"", "\\\"") + "\"}"
+            ));
     }
 
     @PostMapping("/plugins/bilibili-player/api/player/log")

@@ -355,34 +355,49 @@ public class BilibiliApiService {
         log.info("获取视频信息: bvid={}", bvid);
         String infoUrl = "https://api.bilibili.com/x/web-interface/view?bvid=" + bvid;
 
-        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(infoUrl))
-                .header("User-Agent", USER_AGENT)
-                .header("Referer", "https://www.bilibili.com");
+        Exception lastError = null;
+        // 网络异常（超时/连接中断）重试一次，B站对数据中心IP偶发挂起连接
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                        .uri(URI.create(infoUrl))
+                        .header("User-Agent", USER_AGENT)
+                        .header("Referer", "https://www.bilibili.com");
 
-        if (sessdata != null && !sessdata.isEmpty()) {
-            requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
-            log.debug("携带SESSDATA请求视频信息");
+                if (sessdata != null && !sessdata.isEmpty()) {
+                    requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
+                    log.debug("携带SESSDATA请求视频信息");
+                }
+
+                HttpRequest request = requestBuilder.GET().build();
+                HttpResponse<String> response = sendWithTimeout(request, 15);
+                JsonNode root = objectMapper.readTree(response.body());
+
+                int code = root.get("code").asInt();
+                if (code != 0) {
+                    log.error("获取视频信息失败: code={}, message={}", code,
+                            root.has("message") ? root.get("message").asText() : "无");
+                    throw new RuntimeException("获取视频信息失败: " + root.get("message").asText());
+                }
+
+                JsonNode data = root.get("data");
+                Map<String, Object> result = buildVideoInfo(data);
+
+                log.info("视频信息获取成功: title={}, pages={}",
+                        result.getOrDefault("title", ""),
+                        ((List<?>) result.getOrDefault("pages", List.of())).size());
+                return objectMapper.writeValueAsString(result);
+            } catch (RuntimeException e) {
+                // B站返回的业务错误（code != 0）不重试，直接抛出
+                throw e;
+            } catch (Exception e) {
+                lastError = e;
+                log.error("获取视频信息异常(第{}/2次): {} - {}", attempt,
+                        e.getClass().getSimpleName(), e.getMessage());
+            }
         }
-
-        HttpRequest request = requestBuilder.GET().build();
-        HttpResponse<String> response = sendWithTimeout(request, 8);
-        JsonNode root = objectMapper.readTree(response.body());
-
-        int code = root.get("code").asInt();
-        if (code != 0) {
-            log.error("获取视频信息失败: code={}, message={}", code,
-                    root.has("message") ? root.get("message").asText() : "无");
-            throw new RuntimeException("获取视频信息失败: " + root.get("message").asText());
-        }
-
-        JsonNode data = root.get("data");
-        Map<String, Object> result = buildVideoInfo(data);
-
-        log.info("视频信息获取成功: title={}, pages={}",
-                result.getOrDefault("title", ""),
-                ((List<?>) result.getOrDefault("pages", List.of())).size());
-        return objectMapper.writeValueAsString(result);
+        throw new RuntimeException("获取视频信息失败: " + lastError.getClass().getSimpleName()
+                + " - " + lastError.getMessage());
     }
 
     // 统一的 JsonNode 安全取值 -------------------------------------------------

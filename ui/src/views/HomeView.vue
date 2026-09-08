@@ -350,7 +350,8 @@ async function fetchVideo() {
   embedCid.value = ''
   try {
     const { data } = await axiosInstance.get(`${API}/video/info?bvid=${parsed.bvid}`)
-    const info = parseData<{ pages?: Array<{ cid: number }> }>(data)
+    const info = parseData<{ pages?: Array<{ cid: number }>; error?: string }>(data)
+    if (info.error) throw new Error(info.error)
     const firstCid = info.pages?.[0]?.cid ? String(info.pages[0].cid) : ''
     if (firstCid) embedCid.value = firstCid
     const cid = firstCid || embedCid.value
@@ -371,10 +372,11 @@ async function fetchVideo() {
       height: resolution.height,
     } as NonNullable<typeof videoInfo.value>
     generateCode(parsed.bvid, cid)
-  } catch {
+  } catch (e) {
     embedCode.value = ''
     embedPreview.value = ''
-    Toast.error('获取视频信息失败，请检查 BV 号或链接是否正确')
+    const msg = e instanceof Error && e.message ? e.message : '请检查 BV 号或链接是否正确'
+    Toast.error(`获取视频信息失败：${msg}`)
   } finally {
     embedLoading.value = false
   }
