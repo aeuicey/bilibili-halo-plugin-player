@@ -22,7 +22,7 @@
 - **播放**：服务端生成自包含嵌入页（Video.js + DASH 双元素同步），一次拉流、前端本地换轨
 - **分发**：流地址候选链自动降级，默认直连 B 站 CDN，不占服务器带宽
 
-完整技术细节（解析机制、流选择算法、同步原理、容错链）见 **[docs/TECH.md](./docs/TECH.md)**。
+完整技术细节（解析机制、流选择算法、同步原理、容错链）见 **[docs/TECH.md](./docs/TECH.md)**；与 Halo 官方编辑器集成的调研见 **[docs/EDITOR-INTEGRATION.md](./docs/EDITOR-INTEGRATION.md)**。
 
 ## 安装
 
