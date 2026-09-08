@@ -1,5 +1,6 @@
 package com.halo.bilibiliplayer.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -353,40 +354,30 @@ public class BilibiliApiService {
 
     public String getVideoInfo(String bvid) throws Exception {
         log.info("获取视频信息: bvid={}", bvid);
-        String infoUrl = "https://api.bilibili.com/x/web-interface/view?bvid=" + bvid;
 
+        // 首选：无签名的 view 接口；网络异常重试一次
         Exception lastError = null;
-        // 网络异常（超时/连接中断）重试一次，B站对数据中心IP偶发挂起连接
+        boolean nonJson = false;
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                        .uri(URI.create(infoUrl))
-                        .header("User-Agent", USER_AGENT)
-                        .header("Referer", "https://www.bilibili.com");
-
-                if (sessdata != null && !sessdata.isEmpty()) {
-                    requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
-                    log.debug("携带SESSDATA请求视频信息");
-                }
-
-                HttpRequest request = requestBuilder.GET().build();
-                HttpResponse<String> response = sendWithTimeout(request, 15);
-                JsonNode root = objectMapper.readTree(response.body());
-
+                JsonNode root = requestJson("https://api.bilibili.com/x/web-interface/view?bvid=" + bvid);
                 int code = root.get("code").asInt();
                 if (code != 0) {
                     log.error("获取视频信息失败: code={}, message={}", code,
                             root.has("message") ? root.get("message").asText() : "无");
                     throw new RuntimeException("获取视频信息失败: " + root.get("message").asText());
                 }
-
-                JsonNode data = root.get("data");
-                Map<String, Object> result = buildVideoInfo(data);
-
+                Map<String, Object> result = buildVideoInfo(root.get("data"));
                 log.info("视频信息获取成功: title={}, pages={}",
                         result.getOrDefault("title", ""),
                         ((List<?>) result.getOrDefault("pages", List.of())).size());
                 return objectMapper.writeValueAsString(result);
+            } catch (NonJsonResponseException e) {
+                // 返回HTML（风控拦截页/网关错误页），无签名接口被按路径风控时常见，改走WBI接口
+                log.error("view接口返回非JSON内容(疑似风控拦截): status={}, 内容前120字符: {}",
+                        e.status, e.snippet);
+                nonJson = true;
+                break;
             } catch (RuntimeException e) {
                 // B站返回的业务错误（code != 0）不重试，直接抛出
                 throw e;
@@ -396,8 +387,87 @@ public class BilibiliApiService {
                         e.getClass().getSimpleName(), e.getMessage());
             }
         }
-        throw new RuntimeException("获取视频信息失败: " + lastError.getClass().getSimpleName()
-                + " - " + lastError.getMessage());
+        if (!nonJson && lastError != null) {
+            log.warn("view接口网络异常，尝试WBI签名接口兜底...");
+        }
+
+        // 兜底：WBI 签名的 wbi/view/detail 接口（B站Web端现行接口）
+        try {
+            ensureWbiKeys();
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("bvid", bvid);
+            String signedQuery = WbiSignUtil.signParams(params, imgKey, subKey);
+            JsonNode root = requestJson(
+                    "https://api.bilibili.com/x/web-interface/wbi/view/detail?" + signedQuery);
+            int code = root.get("code").asInt();
+            if (code != 0) {
+                log.error("wbi/view/detail返回错误: code={}, message={}", code,
+                        root.has("message") ? root.get("message").asText() : "无");
+                throw new RuntimeException("获取视频信息失败: " + root.get("message").asText());
+            }
+            JsonNode view = root.get("data") != null ? root.get("data").get("View") : null;
+            if (view == null || view.isNull()) {
+                throw new RuntimeException("获取视频信息失败: wbi/view/detail 响应缺少 View 字段");
+            }
+            Map<String, Object> result = buildVideoInfo(view);
+            log.info("视频信息获取成功(WBI兜底): title={}, pages={}",
+                    result.getOrDefault("title", ""),
+                    ((List<?>) result.getOrDefault("pages", List.of())).size());
+            return objectMapper.writeValueAsString(result);
+        } catch (NonJsonResponseException e) {
+            log.error("wbi/view/detail同样返回非JSON: status={}, 内容前120字符: {}", e.status, e.snippet);
+            throw new RuntimeException("获取视频信息失败: B站接口均返回非JSON内容，疑似触发风控，请稍后重试");
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("WBI兜底接口异常: {} - {}", e.getClass().getSimpleName(), e.getMessage());
+            if (lastError != null) {
+                throw new RuntimeException("获取视频信息失败: " + lastError.getClass().getSimpleName()
+                        + " - " + lastError.getMessage());
+            }
+            throw new RuntimeException("获取视频信息失败: " + e.getClass().getSimpleName()
+                    + " - " + e.getMessage());
+        }
+    }
+
+    /** 响应不是 JSON 时抛出，携带 HTTP 状态码与内容摘要用于诊断 */
+    private static class NonJsonResponseException extends Exception {
+        final int status;
+        final String snippet;
+
+        NonJsonResponseException(int status, String body) {
+            this.status = status;
+            this.snippet = body == null ? "null"
+                    : body.substring(0, Math.min(body.length(), 120)).replaceAll("\\s+", " ");
+        }
+    }
+
+    /** 发送 GET 请求并解析 JSON 响应；自动携带 SESSDATA，非 JSON 响应抛 NonJsonResponseException */
+    private JsonNode requestJson(String url) throws Exception {
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", "https://www.bilibili.com");
+
+        if (sessdata != null && !sessdata.isEmpty()) {
+            requestBuilder.header("Cookie", "SESSDATA=" + sessdata);
+            log.debug("携带SESSDATA请求视频信息");
+        }
+
+        HttpResponse<String> response = sendWithTimeout(requestBuilder.GET().build(), 15);
+        try {
+            return objectMapper.readTree(response.body());
+        } catch (JsonProcessingException e) {
+            throw new NonJsonResponseException(response.statusCode(), response.body());
+        }
+    }
+
+    private void ensureWbiKeys() throws Exception {
+        if (imgKey == null || subKey == null ||
+                System.currentTimeMillis() - lastKeyUpdateTime > 3600000) {
+            log.info("刷新WBI签名密钥...");
+            refreshWbiKeys();
+        }
     }
 
     // 统一的 JsonNode 安全取值 -------------------------------------------------
@@ -559,11 +629,7 @@ public class BilibiliApiService {
     /** 发起一次 playurl 请求（WBI 签名 + SESSDATA/Referer/UA），code≠0 时抛异常。 */
     private JsonNode requestPlayUrl(String bvid, String cid, int qn, int fnval,
                                     Map<String, Object> extraParams) throws Exception {
-        if (imgKey == null || subKey == null ||
-                System.currentTimeMillis() - lastKeyUpdateTime > 3600000) {
-            log.info("刷新WBI签名密钥...");
-            refreshWbiKeys();
-        }
+        ensureWbiKeys();
 
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("bvid", bvid);
