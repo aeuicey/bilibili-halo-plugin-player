@@ -444,6 +444,15 @@ function scrollLogsToBottom() {
     })
 }
 
+function appendLogEntry(entry: { time: string; level: string; msg: string }) {
+  // 服务端 SSE 重连会回放最近缓冲，按 time+level+msg 对尾部去重
+  const tail = logEntries.value.slice(-50)
+  if (tail.some((e) => e.time === entry.time && e.level === entry.level && e.msg === entry.msg))
+    return
+  logEntries.value = [...logEntries.value, entry].slice(-800)
+  scrollLogsToBottom()
+}
+
 async function fetchLogHistory() {
   try {
     const { data } = await axiosInstance.get(`${API}/logs/history`)
@@ -456,20 +465,17 @@ async function fetchLogHistory() {
 
 function openLogStream() {
   closeLogStream()
+  stopLogPollFallback()
   try {
     const es = new EventSource(`${API}/logs/stream`)
     es.onmessage = (ev) => {
       try {
         const entry = JSON.parse(ev.data) as { time?: string; level?: string; msg?: string }
-        logEntries.value = [
-          ...logEntries.value,
-          {
-            time: entry.time ?? '',
-            level: entry.level ?? 'INFO',
-            msg: entry.msg ?? String(ev.data),
-          },
-        ].slice(-800)
-        scrollLogsToBottom()
+        appendLogEntry({
+          time: entry.time ?? '',
+          level: entry.level ?? 'INFO',
+          msg: entry.msg ?? String(ev.data),
+        })
       } catch {
         /* ignore malformed entry */
       }
@@ -491,6 +497,7 @@ function closeLogStream() {
 }
 
 function startLogPollFallback() {
+  closeLogStream()
   stopLogPollFallback()
   logPollTimer = setInterval(fetchLogHistory, 2000)
 }

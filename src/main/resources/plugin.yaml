@@ -5,6 +5,8 @@ metadata:
 spec:
   enabled: true
   requires: ">=2.24.0"
+  settingName: plugin-bilibili-player-settings
+  configMapName: plugin-bilibili-player-configmap
   author:
     name: halo-dev
     website: https://github.com/halo-dev

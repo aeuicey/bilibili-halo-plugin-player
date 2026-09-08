@@ -284,12 +284,13 @@ public final class EmbedPageGenerator {
         h.append("function bufEnd(el){try{var b=el.buffered,t=el.currentTime;for(var i=0;i<b.length;i++){if(t>=b.start(i)-0.1&&t<=b.end(i)+0.1)return b.end(i)}if(b.length)return b.end(b.length-1)}catch(e){}return el.currentTime}");
 
         // RAF-based audio sync loop: ±0.15s 纠偏 + 播放/暂停/倍速跟随；
-        // 增强：audio stalled 或其 buffered 落后 video 超 1s 时暂停 video，等 audio canplay 再恢复
+        // 增强：仅当音频真正断粮（缓冲末端落后于播放点，或 stalled 且前瞻缓冲不足 0.5s）才暂停 video，
+        //   等 audio canplay 再恢复；±0.15s 纠偏产生的瞬时 seeking 不触发暂停，避免 play/pause 抖动
         h.append("function syncLoop(){if(rafId)cancelAnimationFrame(rafId);rafId=requestAnimationFrame(function tick(){rafId=requestAnimationFrame(tick);if(!aEl||!usingDash)return;var v=player.el_.querySelector('video');if(!v)return;"
                 + "var dt=v.currentTime-aEl.currentTime;if(Math.abs(dt)>0.15){if(!aEl.paused)aEl.currentTime=v.currentTime}"
                 + "if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused&&!waitingAudio){aEl.play().catch(function(){})}"
                 + "aEl.volume=v.muted?0:player.volume();aEl.playbackRate=v.playbackRate;"
-                + "if(!v.paused&&!v.ended&&!waitingAudio){var abuf=bufEnd(aEl);if(audioStalled||aEl.seeking||(v.currentTime-abuf>1)){waitingAudio=true;tl('syncWait','abuf='+abuf.toFixed(1)+' vt='+v.currentTime.toFixed(1));v.pause()}}"
+                + "if(!v.paused&&!v.ended&&!waitingAudio){var abuf=bufEnd(aEl);var starved=(v.currentTime-abuf>1)||(audioStalled&&abuf<v.currentTime+0.5);if(starved){waitingAudio=true;tl('syncWait','abuf='+abuf.toFixed(1)+' vt='+v.currentTime.toFixed(1));v.pause()}}"
                 + "})}");
 
         // Set up video-level event hooks for audio sync
@@ -312,7 +313,7 @@ public final class EmbedPageGenerator {
         h.append("player.addClass('vjs-bilibili-theme');");
         h.append("videoEvents();wireAudioHooks();wireUnmuteBtn();");
         // autoplay 成功后，提示用户点击按钮取消静音
-        h.append("player.ready(function(){tl('ready','');applyQuality(0);setTimeout(function(){var v=player.el_.querySelector('video');if(v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}},800)});");
+        h.append("player.ready(function(){tl('ready','');applyQuality(80);setTimeout(function(){var v=player.el_.querySelector('video');if(v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}},800)});");
         h.append("</script></body></html>");
         return h.toString();
     }
