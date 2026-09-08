@@ -60,25 +60,14 @@ public final class EmbedPageGenerator {
         h.append(".video-js .vjs-volume-bar{margin:1.35em .45em}");
         h.append(".video-js .vjs-slider{position:relative;cursor:pointer;padding:0;margin:0 .45em;background-color:rgba(115,133,159,.5)}");
         h.append(".video-js .vjs-hidden{display:none!important}");
+        h.append(".video-js .vjs-control-text{border:0;clip:rect(0 0 0 0);height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px}");
         h.append(".video-js .vjs-big-play-button{font-size:3em;line-height:1.5em;height:1.5em;width:3em;display:block;position:absolute;top:10px;left:10px;padding:0;cursor:pointer;opacity:1;border:.06666em solid #fff;background-color:#2b333f;background-color:rgba(43,51,63,.7);border-radius:.3em;transition:all .4s}");
         h.append(".vjs-big-play-button .vjs-icon-placeholder::before{content:'\\25B6';position:absolute;top:0;left:0;width:100%;height:100%;text-align:center;font-size:1.63em;line-height:2.3em}");
         h.append(".vjs-has-started .vjs-big-play-button{display:none}");
-        // 原有样式
+        // 页面布局：画质选择已收敛进 Video.js 控制栏，无独立工具条，视频区占满整个页面
         h.append("*{margin:0;padding:0;box-sizing:border-box}");
-        h.append("html,body{height:100%}body{background:#000;display:flex;flex-direction:column;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}");
-        h.append(".qbar{display:flex;align-items:center;padding:0 12px;height:36px;background:rgba(0,0,0,.85);flex-shrink:0;z-index:20}");
-        h.append(".qbar .qlabel{font-size:12px;color:#888;margin-right:8px}");
-        h.append(".qselect{position:relative}");
-        h.append(".qsbtn{display:flex;align-items:center;gap:4px;padding:4px 10px;font-size:12px;color:#fff;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:4px;cursor:pointer;font-family:inherit}");
-        h.append(".qsbtn:hover{background:rgba(255,255,255,.15)}");
-        h.append(".qsbtn .arr{font-size:10px;color:#888;transition:transform .2s}");
-        h.append(".qsbtn.open .arr{transform:rotate(180deg)}");
-        h.append(".qmenu{position:absolute;top:100%;left:0;margin-top:4px;background:rgba(0,0,0,.95);border:1px solid rgba(255,255,255,.12);border-radius:6px;overflow:hidden;display:none;min-width:100px;z-index:30}");
-        h.append(".qmenu.show{display:block}");
-        h.append(".qmi{padding:8px 16px;font-size:13px;color:#ccc;cursor:pointer;white-space:nowrap}");
-        h.append(".qmi:hover{background:rgba(255,255,255,.1);color:#fff}");
-        h.append(".qmi.ac{color:#fb7299}");
-        h.append(".pwrap{flex:1;position:relative;width:100%;min-height:0;max-width:100%;margin:0 auto;aspect-ratio:16/9;background:#000}");
+        h.append("html,body{height:100%}body{background:#000;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}");
+        h.append(".pwrap{position:relative;width:100%;height:100%;background:#000}");
         h.append(".pwrap .video-js{position:absolute;inset:0;width:100%!important;height:100%!important;padding:0!important}");
         h.append(".pwrap .video-js .vjs-tech{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain}");
         // 「解除静音」悬浮层：autoplay 必须 muted，提示用户点击恢复声音
@@ -100,9 +89,22 @@ public final class EmbedPageGenerator {
         h.append(".vjs-bilibili-theme .vjs-big-play-button:hover{background:#fb7299;transform:scale(1.08)}");
         h.append(".vjs-bilibili-theme .vjs-big-play-button .vjs-icon-placeholder::before{line-height:66px}");
         h.append(".vjs-bilibili-theme .vjs-volume-panel{order:2}.vjs-bilibili-theme .vjs-picture-in-picture-control{order:8}");
+        // —— 画质选择组件：Video.js 控制栏内的文本按钮 + 向上展开的清晰度菜单 ——
+        h.append(".vjs-bilibili-theme .vjs-quality-control{width:auto;padding:0 12px;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:4px;cursor:pointer}");
+        h.append(".vjs-bilibili-theme .vjs-quality-control,.vjs-bilibili-theme .vjs-quality-control:hover,.vjs-bilibili-theme .vjs-quality-control:focus{text-shadow:none}");
+        h.append(".vjs-bilibili-theme .vjs-quality-control:hover{background:rgba(255,255,255,.12)}");
+        h.append(".vjs-quality-control .vjs-icon-placeholder{display:none}");
+        h.append(".vjs-quality-label{font-size:12px;line-height:48px;color:#fff;white-space:nowrap}");
+        h.append(".vjs-quality-arrow{font-size:9px;line-height:48px;color:rgba(255,255,255,.65);transition:transform .2s}");
+        h.append(".vjs-quality-control.vjs-quality-open .vjs-quality-label{color:#fb7299}");
+        h.append(".vjs-quality-control.vjs-quality-open .vjs-quality-arrow{transform:rotate(180deg)}");
+        h.append(".vjs-quality-menu{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;min-width:96px;padding:4px 0;background:rgba(20,22,26,.92);border:1px solid rgba(255,255,255,.12);border-radius:4px;display:none;z-index:12}");
+        h.append(".vjs-quality-control.vjs-quality-open .vjs-quality-menu{display:block}");
+        h.append(".qmi{display:block;padding:7px 18px;font-size:12px;color:#d8d8d8;cursor:pointer;white-space:nowrap;text-align:center;line-height:1.5}");
+        h.append(".qmi:hover{background:rgba(255,255,255,.1);color:#fff}");
+        h.append(".qmi.ac{color:#fb7299;font-weight:600}");
         h.append(".vjs-error-disp{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#f87171;background:rgba(0,0,0,.85);z-index:5;text-align:center;padding:20px}");
         h.append("</style></head><body>");
-        h.append("<div class=\"qbar\"><span class=\"qlabel\">Quality</span><div class=\"qselect\"><button id=\"qbtn\" class=\"qsbtn\">720P <span class=\"arr\">▾</span></button><div id=\"qmenu\" class=\"qmenu\"></div></div></div>");
         h.append("<div class=\"pwrap\"><div class=\"vjs-error-disp\" id=\"er\"></div>");
         h.append("<video id=\"v\" class=\"video-js vjs-default-skin vjs-bilibili-theme\" controls autoplay muted playsinline></video>");
         h.append("<button id=\"unmuteBtn\" class=\"unmute-hint\" type=\"button\">🔊 点击解除静音</button></div>");
@@ -249,7 +251,7 @@ public final class EmbedPageGenerator {
                 + "vEl.removeAttribute('src');vEl.load();vEl.src=mp4Cands[0];vEl.load();"
                 + "tl('mp4',url.substring(0,60));"
                 + "var p=vEl.play();if(p&&p.catch)p.catch(function(e){if(e.name!=='AbortError')tl('playErr',e.name)});"
-                + "try{document.getElementById('qbtn').childNodes[0].textContent='MP4'}catch(e){}}");
+                + "try{if(qBtnComp)qBtnComp.setLabel('MP4')}catch(e){}}");
 
         // 候选回退：error 时换下一个候选 URL 重试并保持 currentTime；全部耗尽则重取 playurl（可能 403/过期）
         h.append("function handleMediaError(kind){"
@@ -301,11 +303,27 @@ public final class EmbedPageGenerator {
                 + "v.addEventListener('waiting',function(){videoStalled=true;if(aEl&&!aEl.paused)aEl.pause()});"
                 + "v.addEventListener('playing',function(){if(videoStalled){videoStalled=false;if(aEl&&usingDash){try{aEl.currentTime=v.currentTime}catch(e){}if(aEl.paused)aEl.play().catch(function(){})}}})}");
 
-        // Quality menu outside video bar —— 切换纯前端换轨，不重调 API
-        h.append("function updateQbtn(){var b=document.getElementById('qbtn');if(!playData)return;var idx=(playData.acceptQuality||[]).indexOf(curQn);b.childNodes[0].textContent=idx>=0?playData.acceptDescription[idx]:'自动'}");
-        h.append("function updateResMenu(){var m=document.getElementById('qmenu');var b=document.getElementById('qbtn');if(!playData||!playData.acceptQuality||!playData.acceptQuality.length)return;var aq=playData.acceptQuality,ad=playData.acceptDescription||[];m.innerHTML='';for(var i=0;i<aq.length;i++){(function(qn,desc){var d=document.createElement('div');d.className='qmi'+(qn===curQn?' ac':'');d.textContent=desc;d.addEventListener('click',function(e){e.stopPropagation();m.classList.remove('show');b.classList.remove('open');reloaded=false;applyQuality(qn)});m.appendChild(d)})(aq[i],ad[i]||(aq[i]+'P'))}updateQbtn()}");
-        h.append("document.getElementById('qbtn').addEventListener('click',function(e){e.stopPropagation();var m=document.getElementById('qmenu');var b=this;b.classList.toggle('open');m.classList.toggle('show')});");
-        h.append("document.addEventListener('click',function(e){var qs=document.querySelector('.qselect');if(!qs.contains(e.target)){document.getElementById('qmenu').classList.remove('show');document.getElementById('qbtn').classList.remove('open')}});");
+        // —— 画质选择：Video.js 自定义控制栏组件（文本按钮 + 向上展开菜单），切换纯前端换轨，不重调 API ——
+        h.append("var qBtnComp=null;");
+        h.append("function closeQualityMenu(){if(qBtnComp)qBtnComp.closeMenu()}");
+        h.append("var VjsButton=videojs.getComponent('Button');");
+        h.append("class QualityButton extends VjsButton{"
+                + "createEl(){var el=super.createEl();el.classList.add('vjs-quality-control');"
+                + "this.labelEl_=document.createElement('span');this.labelEl_.className='vjs-quality-label';this.labelEl_.textContent='自动';"
+                + "this.arrowEl_=document.createElement('span');this.arrowEl_.className='vjs-quality-arrow';this.arrowEl_.textContent='▾';"
+                + "this.menuEl_=document.createElement('span');this.menuEl_.className='vjs-quality-menu';"
+                + "el.appendChild(this.labelEl_);el.appendChild(this.arrowEl_);el.appendChild(this.menuEl_);return el}"
+                + "setLabel(t){this.labelEl_.textContent=t}"
+                + "openMenu(){this.el_.classList.add('vjs-quality-open')}"
+                + "closeMenu(){this.el_.classList.remove('vjs-quality-open')}"
+                + "isOpen(){return this.el_.classList.contains('vjs-quality-open')}"
+                + "handleClick(e){if(e)e.stopPropagation();if(this.isOpen())this.closeMenu();else this.openMenu()}"
+                + "}");
+        h.append("videojs.registerComponent('QualityButton',QualityButton);");
+        h.append("function updateQbtn(){if(!qBtnComp||!playData)return;var idx=(playData.acceptQuality||[]).indexOf(curQn);qBtnComp.setLabel(idx>=0?playData.acceptDescription[idx]:'自动')}");
+        h.append("function updateResMenu(){if(!qBtnComp||!playData||!playData.acceptQuality||!playData.acceptQuality.length)return;var aq=playData.acceptQuality,ad=playData.acceptDescription||[];var m=qBtnComp.menuEl_;m.innerHTML='';for(var i=0;i<aq.length;i++){(function(qn,desc){var d=document.createElement('span');d.className='qmi'+(qn===curQn?' ac':'');d.textContent=desc;d.addEventListener('click',function(e){e.stopPropagation();closeQualityMenu();reloaded=false;applyQuality(qn)});m.appendChild(d)})(aq[i],ad[i]||(aq[i]+'P'))}updateQbtn()}");
+        h.append("document.addEventListener('click',function(e){if(qBtnComp&&qBtnComp.el()&&!qBtnComp.el().contains(e.target))closeQualityMenu()});");
+        h.append("document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode===27)closeQualityMenu()});");
 
         // Video.js 事件绑定 + 解码看门狗喂狗 + 候选回退入口
         h.append("function videoEvents(){var v=player.el_.querySelector('video');v.addEventListener('play',function(){tl('play','t='+player.currentTime().toFixed(1))});v.addEventListener('pause',function(){tl('pause','t='+player.currentTime().toFixed(1))});v.addEventListener('seeked',function(){tl('seeked','t='+player.currentTime().toFixed(1))});v.addEventListener('ended',function(){tl('ended','')});v.addEventListener('error',function(){tl('error','c='+(v.error?v.error.code:'?'));handleMediaError('v')});v.addEventListener('loadeddata',function(){decodeOk=true;reloaded=false;clearWatchdog()});v.addEventListener('progress',function(){decodeOk=true;clearWatchdog()});v.addEventListener('volumechange',function(){var btn=document.getElementById('unmuteBtn');if(!btn)return;if(v.muted||player.volume()===0){btn.classList.add('show')}else{btn.classList.remove('show')}});var lastWaiting=0;v.addEventListener('waiting',function(){var now=Date.now();if(now-lastWaiting<1000)return;lastWaiting=now;tl('stall','t='+player.currentTime().toFixed(1));v.addEventListener('canplay',function x(){v.removeEventListener('canplay',x);tl('recover','canplay');if(v.paused&&!v.ended&&!waitingAudio){var p=v.play();if(p&&p.catch)p.catch(function(err){if(err.name!=='AbortError')tl('recoverErr',err.name)})}},{once:true})})};");
@@ -313,9 +331,12 @@ public final class EmbedPageGenerator {
         // 「解除静音」按钮：用户主动点击才 unmute，并同时同步到 audio 元素（DASH 模式）
         h.append("function wireUnmuteBtn(){var btn=document.getElementById('unmuteBtn');if(!btn)return;btn.addEventListener('click',function(e){e.stopPropagation();try{player.muted(false);if(player.volume()===0)player.volume(1);if(aEl){aEl.muted=false;aEl.volume=player.volume()}btn.classList.remove('show');tl('unmute','manual')}catch(err){tl('unmuteErr',err.message)}})};");
 
-        // Video.js init：尺寸交给 .pwrap (aspect-ratio:16/9) + .video-js (inset:0)；补倍速控件
-        h.append("player=videojs('v',{controls:true,preload:'auto',fluid:false,fill:true,autoplay:true,muted:true,playbackRates:[0.5,0.75,1,1.25,1.5,2],controlBar:{children:['playToggle','volumePanel','currentTimeDisplay','timeDivider','durationDisplay','progressControl','playbackRateMenuButton','pictureInPictureToggle','fullscreenToggle']}});");
+        // Video.js init：尺寸交给 .pwrap 全页填充 + .video-js (inset:0)；控制栏补倍速控件，画质组件插在倍速与画中画之间
+        h.append("player=videojs('v',{controls:true,preload:'auto',fluid:false,fill:true,autoplay:true,muted:true,playbackRates:[0.5,0.75,1,1.25,1.5,2],controlBar:{children:['playToggle','volumePanel','currentTimeDisplay','timeDivider','durationDisplay','progressControl','playbackRateMenuButton','qualityButton','pictureInPictureToggle','fullscreenToggle']}});");
         h.append("player.addClass('vjs-bilibili-theme');");
+        h.append("qBtnComp=player.controlBar?player.controlBar.getChild('qualityButton'):null;");
+        // 控制栏自动隐藏时画质菜单一并收起
+        h.append("player.on('userinactive',function(){closeQualityMenu()});");
         h.append("videoEvents();wireAudioHooks();wireUnmuteBtn();");
         // autoplay 成功后，提示用户点击按钮取消静音
         h.append("player.ready(function(){tl('ready','');applyQuality(80);setTimeout(function(){var v=player.el_.querySelector('video');if(v&&v.muted){var btn=document.getElementById('unmuteBtn');if(btn)btn.classList.add('show')}},800)});");

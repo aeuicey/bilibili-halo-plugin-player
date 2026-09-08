@@ -20,7 +20,6 @@ import {
   VTag,
   Dialog,
   Toast,
-  IconArrowDownLine,
   IconClipboardLine,
   IconLogoutCircleRLine,
   IconRefreshLine,
@@ -104,8 +103,15 @@ const embedCid = ref('')
 const embedLoading = ref(false)
 const embedCode = ref('')
 const embedPreview = ref('')
-const showSizeSettings = ref(false)
-const embedWidth = ref('100')
+type WidthPreset = '100' | '640' | '860' | 'custom'
+const widthPresets: Array<{ id: WidthPreset; label: string }> = [
+  { id: '100', label: '自适应 100%' },
+  { id: '640', label: '640px' },
+  { id: '860', label: '860px' },
+  { id: 'custom', label: '自定义' },
+]
+const widthPreset = ref<WidthPreset>('100')
+const customWidth = ref(720)
 const videoInfo = ref<null | {
   title: string
   pic: string
@@ -131,6 +137,30 @@ const videoOrientation = computed(() => {
   const h = videoInfo.value?.height ?? 0
   if (w <= 0 || h <= 0) return ''
   return h > w ? '竖屏' : '横屏'
+})
+const videoAspectLabel = computed(() => {
+  const w = videoInfo.value?.width ?? 0
+  const h = videoInfo.value?.height ?? 0
+  if (w <= 0 || h <= 0) return ''
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
+  const g = gcd(w, h)
+  const rw = w / g
+  const rh = h / g
+  return rw <= 40 && rh <= 40 ? `${rw}:${rh}` : `${(w / h).toFixed(2)}:1`
+})
+const aspectBoxStyle = computed(() => {
+  const w = videoInfo.value?.width ?? 0
+  const h = videoInfo.value?.height ?? 0
+  const ratio = w > 0 && h > 0 ? w / h : 16 / 9
+  const maxW = 180
+  const maxH = 110
+  let bw = maxW
+  let bh = maxW / ratio
+  if (bh > maxH) {
+    bh = maxH
+    bw = maxH * ratio
+  }
+  return { width: `${bw.toFixed(1)}px`, height: `${bh.toFixed(1)}px` }
 })
 
 /* ---------- Logs ---------- */
@@ -382,6 +412,11 @@ async function fetchVideo() {
   }
 }
 
+function clampWidth(n: number): number {
+  if (!Number.isFinite(n)) return 720
+  return Math.min(2000, Math.max(200, Math.round(n)))
+}
+
 function generateCode(bvid: string, cid: string) {
   if (!bvid || !cid) {
     embedCode.value = ''
@@ -390,11 +425,11 @@ function generateCode(bvid: string, cid: string) {
   }
   const src = `${siteOrigin.value}${EMBED_PATH}?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`
 
-  if (!showSizeSettings.value) {
-    embedCode.value = `<iframe src="${src}" style="width:100%;aspect-ratio:16/9;border:none;border-radius:8px" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe>`
+  if (widthPreset.value === '100') {
+    embedCode.value = `<iframe src="${src}" style="width:100%;aspect-ratio:${videoAspectRatio.value};border:none;border-radius:8px" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe>`
   } else {
-    const maxWidth = embedWidth.value === '100' ? '100%' : embedWidth.value + 'px'
-    const containerStyle = `position:relative;width:100%;max-width:${maxWidth};aspect-ratio:${videoAspectRatio.value};border-radius:8px;overflow:hidden;margin:16px 0`
+    const px = widthPreset.value === 'custom' ? clampWidth(customWidth.value) : Number(widthPreset.value)
+    const containerStyle = `position:relative;width:100%;max-width:${px}px;aspect-ratio:${videoAspectRatio.value};border-radius:8px;overflow:hidden;margin:16px 0`
     const iframeStyle = `position:absolute;top:0;left:0;width:100%;height:100%;border:none`
     embedCode.value = `<div data-bilibili-player="true" data-bvid="${bvid}" data-cid="${cid}" style="${containerStyle}"><iframe src="${src}" style="${iframeStyle}" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe></div>`
   }
@@ -406,13 +441,8 @@ function regenerateCode() {
   if (parsed) generateCode(parsed.bvid, embedCid.value)
 }
 
-function toggleSizeSettings() {
-  showSizeSettings.value = !showSizeSettings.value
-  regenerateCode()
-}
-
-function selectEmbedWidth(value: string) {
-  embedWidth.value = value
+function selectPreset(value: WidthPreset) {
+  widthPreset.value = value
   regenerateCode()
 }
 
@@ -660,114 +690,157 @@ function onTabChange(id: string | number) {
     </VCard>
 
     <!-- 视频嵌入 -->
-    <VCard v-if="activeTabId === 'embed'" title="生成视频嵌入代码">
-      <div class="bp-embed">
-        <div class="bp-search">
-          <input
-            v-model="embedBvid"
-            class="bp-input"
-            placeholder="BV1xx411c7mD 或 https://www.bilibili.com/video/BV..."
-            @keyup.enter="fetchVideo"
-          />
-          <VButton type="primary" :loading="embedLoading" @click="fetchVideo">获取视频</VButton>
-        </div>
-
-        <div v-if="videoInfo" class="bp-video">
-          <img
-            class="bp-video__cover"
-            :src="coverSrc"
-            :alt="videoInfo.title"
-            loading="lazy"
-            @error="onCoverError"
-          />
-          <div class="bp-video__meta">
-            <div class="bp-video__title">{{ videoInfo.title }}</div>
-            <div class="bp-video__sub">
-              <span>UP 主：{{ videoInfo.ownerName }}</span>
-              <template v-if="videoInfo.width && videoInfo.height">
-                <span> &middot; {{ videoInfo.width }}&times;{{ videoInfo.height }}</span>
-                <VTag v-if="videoOrientation" class="bp-video__orientation">{{
-                  videoOrientation
-                }}</VTag>
-              </template>
-            </div>
-            <div v-if="videoInfo.stat" class="bp-video__stats">
-              <span>{{ formatNum(videoInfo.stat.view) }} 播放</span>
-              <span>{{ formatNum(videoInfo.stat.danmaku) }} 弹幕</span>
-              <span>{{ formatNum(videoInfo.stat.like) }} 点赞</span>
-            </div>
-            <div v-if="videoInfo.pages && videoInfo.pages.length > 1" class="bp-video__pages">
-              <select
-                v-model="embedCid"
-                class="bp-input"
-                @change="!embedLoading && generateCode(parseBvid(embedBvid)?.bvid || '', embedCid)"
-              >
-                <option v-for="p in videoInfo.pages" :key="p.cid" :value="p.cid">
-                  P{{ p.page }} &middot; {{ p.part }}
-                </option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="embedCode" class="bp-code-section">
-          <div class="bp-code-toolbar">
-            <span class="bp-code-label">嵌入代码</span>
-            <VButton size="sm" type="primary" @click="copyCode">
-              <template #icon><IconClipboardLine /></template>
-              复制代码
-            </VButton>
-          </div>
-          <pre class="bp-code-block"><code>{{ embedCode }}</code></pre>
-
-          <div class="bp-size-settings">
-            <button class="bp-size-toggle" @click="toggleSizeSettings">
-              <IconArrowDownLine class="bp-chevron" :class="{ rotated: showSizeSettings }" />
-              尺寸设置
-              <span v-if="!showSizeSettings" class="bp-size-hint">默认自适应宽度</span>
-            </button>
-            <Transition name="bp-collapse">
-              <div v-if="showSizeSettings" class="bp-size-options">
-                <span class="bp-size-label">最大宽度：</span>
-                <button
-                  v-for="opt in [
-                    { v: '100', l: '自适应' },
-                    { v: '800', l: '800px' },
-                    { v: '640', l: '640px' },
-                    { v: '480', l: '480px' },
-                  ]"
-                  :key="opt.v"
-                  class="bp-chip"
-                  :class="{ active: embedWidth === opt.v }"
-                  @click="selectEmbedWidth(opt.v)"
-                >
-                  {{ opt.l }}
-                </button>
-                <span class="bp-size-ratio"
-                  >横竖屏比例：{{ videoAspectRatio }}（按视频分辨率自动识别）</span
-                >
-              </div>
-            </Transition>
-          </div>
-
-          <div class="bp-preview">
-            <iframe
-              v-if="embedPreview"
-              :src="embedPreview"
-              allowfullscreen
-              allow="autoplay; encrypted-media"
-              loading="lazy"
+    <div v-if="activeTabId === 'embed'" class="bp-embed">
+      <!-- ① 视频源 -->
+      <VCard title="视频源">
+        <div class="bp-section">
+          <div class="bp-search">
+            <input
+              v-model="embedBvid"
+              class="bp-input"
+              placeholder="BV1xx411c7mD 或 https://www.bilibili.com/video/BV..."
+              @keyup.enter="fetchVideo"
             />
+            <VButton type="primary" :loading="embedLoading" @click="fetchVideo">解析视频</VButton>
           </div>
         </div>
+      </VCard>
 
-        <VEmpty
-          v-if="!videoInfo && !embedLoading"
-          title="暂无视频信息"
-          message="在上方输入 BV 号后点击获取视频"
-        />
-      </div>
-    </VCard>
+      <!-- ② 视频信息 -->
+      <VCard title="视频信息">
+        <div class="bp-section">
+          <div v-if="videoInfo" class="bp-video">
+            <img
+              class="bp-video__cover"
+              :src="coverSrc"
+              :alt="videoInfo.title"
+              loading="lazy"
+              @error="onCoverError"
+            />
+            <div class="bp-video__meta">
+              <div class="bp-video__title">{{ videoInfo.title }}</div>
+              <div class="bp-video__sub">
+                <span>UP 主：{{ videoInfo.ownerName }}</span>
+                <template v-if="videoInfo.width && videoInfo.height">
+                  <span> &middot; {{ videoInfo.width }}&times;{{ videoInfo.height }}</span>
+                  <VTag v-if="videoOrientation" class="bp-video__orientation">{{
+                    videoOrientation
+                  }}</VTag>
+                </template>
+              </div>
+              <div v-if="videoInfo.stat" class="bp-video__stats">
+                <span>{{ formatNum(videoInfo.stat.view) }} 播放</span>
+                <span>{{ formatNum(videoInfo.stat.danmaku) }} 弹幕</span>
+                <span>{{ formatNum(videoInfo.stat.like) }} 点赞</span>
+              </div>
+              <div v-if="videoInfo.pages && videoInfo.pages.length > 1" class="bp-video__pages">
+                <select
+                  v-model="embedCid"
+                  class="bp-input"
+                  @change="!embedLoading && generateCode(parseBvid(embedBvid)?.bvid || '', embedCid)"
+                >
+                  <option v-for="p in videoInfo.pages" :key="p.cid" :value="p.cid">
+                    P{{ p.page }} &middot; {{ p.part }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <VEmpty
+            v-else
+            title="暂无视频信息"
+            message="在「视频源」中输入 BV 号或链接并点击解析"
+          />
+        </div>
+      </VCard>
+
+      <!-- ③ 尺寸与样式 -->
+      <VCard title="尺寸与样式">
+        <div class="bp-section">
+          <div v-if="videoInfo" class="bp-form">
+            <div class="bp-form-row">
+              <span class="bp-form-label">尺寸预设</span>
+              <div class="bp-segmented">
+                <button
+                  v-for="opt in widthPresets"
+                  :key="opt.id"
+                  class="bp-segmented__item"
+                  :class="{ active: widthPreset === opt.id }"
+                  @click="selectPreset(opt.id)"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
+            <div v-if="widthPreset === 'custom'" class="bp-form-row">
+              <span class="bp-form-label">自定义宽度</span>
+              <div class="bp-width-input">
+                <input
+                  v-model.number="customWidth"
+                  class="bp-input"
+                  type="number"
+                  min="200"
+                  max="2000"
+                  step="10"
+                  @input="regenerateCode"
+                />
+                <span class="bp-width-input__unit">px</span>
+              </div>
+            </div>
+            <div class="bp-form-row">
+              <span class="bp-form-label">画幅比例</span>
+              <div class="bp-aspect">
+                <div class="bp-aspect__box" :style="aspectBoxStyle">
+                  <span class="bp-aspect__play">&#9654;</span>
+                </div>
+                <div class="bp-aspect__meta">
+                  <span class="bp-aspect__ratio">{{ videoAspectLabel || '16:9' }}</span>
+                  <span class="bp-aspect__size">
+                    {{ videoInfo.width }}&times;{{ videoInfo.height
+                    }}<template v-if="videoOrientation"> &middot; {{ videoOrientation }}</template>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <VEmpty
+            v-else
+            title="暂无可设置的尺寸"
+            message="解析视频后可调整嵌入宽度并查看画幅比例"
+          />
+        </div>
+      </VCard>
+
+      <!-- ④ 嵌入代码 -->
+      <VCard title="嵌入代码">
+        <div class="bp-section">
+          <div v-if="embedCode" class="bp-code-section">
+            <div class="bp-code-toolbar">
+              <span class="bp-code-label">iframe 嵌入代码</span>
+              <VButton size="sm" type="primary" @click="copyCode">
+                <template #icon><IconClipboardLine /></template>
+                复制代码
+              </VButton>
+            </div>
+            <pre class="bp-code-block"><code>{{ embedCode }}</code></pre>
+            <div class="bp-preview">
+              <iframe
+                v-if="embedPreview"
+                :src="embedPreview"
+                allowfullscreen
+                allow="autoplay; encrypted-media"
+                loading="lazy"
+              />
+            </div>
+          </div>
+          <VEmpty
+            v-else
+            title="暂无嵌入代码"
+            message="解析视频后自动生成嵌入代码与预览"
+          />
+        </div>
+      </VCard>
+    </div>
 
     <!-- 运行日志 -->
     <VCard v-if="activeTabId === 'logs'" title="运行日志">
@@ -964,7 +1037,12 @@ function onTabChange(id: string | number) {
 .bp-embed {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
+  width: 100%;
+  max-width: 960px;
+}
+.bp-section {
+  padding: 8px;
 }
 .bp-search {
   display: flex;
@@ -1091,58 +1169,109 @@ function onTabChange(id: string | number) {
   color: #1f2329;
 }
 
-/* Size settings collapsible */
-.bp-size-settings {
-  border: 1px solid rgb(234, 236, 240);
-  border-radius: 4px;
-  overflow: hidden;
+/* Size & style form */
+.bp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
-.bp-size-toggle {
+.bp-form-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
+  gap: 16px;
+}
+.bp-form-label {
+  width: 72px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: #4e5969;
+}
+@media (max-width: 640px) {
+  .bp-form-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
+.bp-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   background: #f7f8fa;
+  border: 1px solid rgb(234, 236, 240);
+  border-radius: 4px;
+}
+.bp-segmented__item {
+  padding: 5px 14px;
   font-size: 12px;
-  font-weight: 500;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
   color: #4e5969;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s;
+  white-space: nowrap;
+  transition: all 0.15s ease;
 }
-.bp-size-toggle:hover {
-  background: #eef0f2;
+.bp-segmented__item:hover {
+  color: #1f2329;
 }
-.bp-chevron {
-  transition: transform 0.2s;
+.bp-segmented__item.active {
+  background: #fff;
+  color: #fb7299;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
-.bp-chevron.rotated {
-  transform: rotate(180deg);
-}
-.bp-size-hint {
-  margin-left: auto;
-  font-weight: 400;
-  color: #86909c;
-  font-size: 11px;
-}
-.bp-size-options {
+
+.bp-width-input {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  padding: 8px 12px 12px;
-  border-top: 1px solid rgb(234, 236, 240);
 }
-.bp-size-label {
-  font-size: 12px;
-  color: #4e5969;
+.bp-width-input .bp-input {
+  flex: none;
+  width: 140px;
 }
-.bp-size-ratio {
+.bp-width-input__unit {
+  font-size: 13px;
+  color: #86909c;
+}
+
+.bp-aspect {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.bp-aspect__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #18191c, #2b2f36);
+  border: 1px solid rgb(234, 236, 240);
+  border-radius: 4px;
+  transition:
+    width 0.2s ease,
+    height 0.2s ease;
+}
+.bp-aspect__play {
+  font-size: 14px;
+  color: #fb7299;
+  opacity: 0.9;
+}
+.bp-aspect__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bp-aspect__ratio {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2329;
+}
+.bp-aspect__size {
   font-size: 12px;
   color: #86909c;
-  margin-left: auto;
 }
 
 .bp-chip {
@@ -1259,21 +1388,5 @@ function onTabChange(id: string | number) {
 .bp-log[data-level='DEBUG'] .bp-log__level {
   color: #4e5969;
   background: rgb(234, 236, 240);
-}
-
-.bp-collapse-enter-active,
-.bp-collapse-leave-active {
-  transition: all 0.2s ease;
-  overflow: hidden;
-}
-.bp-collapse-enter-from,
-.bp-collapse-leave-to {
-  opacity: 0;
-  max-height: 0;
-}
-.bp-collapse-enter-to,
-.bp-collapse-leave-from {
-  opacity: 1;
-  max-height: 100px;
 }
 </style>
