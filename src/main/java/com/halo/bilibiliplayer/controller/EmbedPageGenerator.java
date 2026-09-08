@@ -113,7 +113,7 @@ public final class EmbedPageGenerator {
         h.append("var player=null,ps=null,aEl=null,rafId=0,usingDash=false,mp4Mode=false,switching=false;");
         h.append("var playData=null,fetchedAt=0,curQn=0,curVTrack=null,curATrack=null,failedCodecs={};");
         h.append("var vCands=[],vCandIdx=0,aCands=[],aCandIdx=0,mp4Cands=[],mp4CandIdx=0;");
-        h.append("var loadWatchdog=0,decodeOk=false,waitingAudio=false,audioStalled=false,reloaded=false;");
+        h.append("var loadWatchdog=0,decodeOk=false,waitingAudio=false,audioStalled=false,videoStalled=false,reloaded=false;");
         h.append("var RELOAD_MS=110*60*1000;");
 
         // PlayerState for seamless quality switch
@@ -138,7 +138,7 @@ public final class EmbedPageGenerator {
         h.append("function se(m){var er=document.getElementById('er');er.style.display='flex';er.textContent=m;try{player.addClass('vjs-error')}catch(e){}}");
 
         // Destroy audio element + RAF loop (MP4 模式下同样调用，关闭音画同步)
-        h.append("function destroyAudio(){if(rafId){cancelAnimationFrame(rafId);rafId=0}if(aEl){try{aEl.pause();aEl.removeAttribute('src');aEl.load();aEl.parentNode.removeChild(aEl)}catch(e){}aEl=null}usingDash=false;waitingAudio=false;audioStalled=false}");
+        h.append("function destroyAudio(){if(rafId){cancelAnimationFrame(rafId);rafId=0}if(aEl){try{aEl.pause();aEl.removeAttribute('src');aEl.load();aEl.parentNode.removeChild(aEl)}catch(e){}aEl=null}usingDash=false;waitingAudio=false;audioStalled=false;videoStalled=false}");
 
         // —— 流选择工具 ——
         h.append("function codecFamily(c){c=(c||'').toLowerCase();if(c.indexOf('avc1')===0)return 'avc1';if(c.indexOf('av01')===0)return 'av01';if(c.indexOf('hev1')===0||c.indexOf('hvc1')===0)return 'hevc';return 'other'}");
@@ -284,17 +284,22 @@ public final class EmbedPageGenerator {
         h.append("function bufEnd(el){try{var b=el.buffered,t=el.currentTime;for(var i=0;i<b.length;i++){if(t>=b.start(i)-0.1&&t<=b.end(i)+0.1)return b.end(i)}if(b.length)return b.end(b.length-1)}catch(e){}return el.currentTime}");
 
         // RAF-based audio sync loop: ±0.15s 纠偏 + 播放/暂停/倍速跟随；
-        // 增强：仅当音频真正断粮（缓冲末端落后于播放点，或 stalled 且前瞻缓冲不足 0.5s）才暂停 video，
+        // 视频卡顿（waiting）期间暂停音频并冻结纠偏，防止音频跑飞后被反复拽回重放同一小段；
+        // 仅当音频真正断粮（缓冲末端落后于播放点，或 stalled 且前瞻缓冲不足 0.5s）才暂停 video，
         //   等 audio canplay 再恢复；±0.15s 纠偏产生的瞬时 seeking 不触发暂停，避免 play/pause 抖动
         h.append("function syncLoop(){if(rafId)cancelAnimationFrame(rafId);rafId=requestAnimationFrame(function tick(){rafId=requestAnimationFrame(tick);if(!aEl||!usingDash)return;var v=player.el_.querySelector('video');if(!v)return;"
-                + "var dt=v.currentTime-aEl.currentTime;if(Math.abs(dt)>0.15){if(!aEl.paused)aEl.currentTime=v.currentTime}"
-                + "if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused&&!waitingAudio){aEl.play().catch(function(){})}"
+                + "if(videoStalled){if(!aEl.paused)aEl.pause()}"
+                + "else{var dt=v.currentTime-aEl.currentTime;if(Math.abs(dt)>0.15){if(!aEl.paused)aEl.currentTime=v.currentTime}"
+                + "if(v.paused&&!aEl.paused){aEl.pause()}else if(!v.paused&&aEl.paused&&!waitingAudio){aEl.play().catch(function(){})}}"
                 + "aEl.volume=v.muted?0:player.volume();aEl.playbackRate=v.playbackRate;"
                 + "if(!v.paused&&!v.ended&&!waitingAudio){var abuf=bufEnd(aEl);var starved=(v.currentTime-abuf>1)||(audioStalled&&abuf<v.currentTime+0.5);if(starved){waitingAudio=true;tl('syncWait','abuf='+abuf.toFixed(1)+' vt='+v.currentTime.toFixed(1));v.pause()}}"
                 + "})}");
 
         // Set up video-level event hooks for audio sync
-        h.append("function wireAudioHooks(){var v=player.el_.querySelector('video');v.addEventListener('seeked',function(){if(aEl)aEl.currentTime=v.currentTime});v.addEventListener('ratechange',function(){if(aEl)aEl.playbackRate=v.playbackRate});v.addEventListener('volumechange',function(){if(aEl)aEl.volume=v.muted?0:player.volume()})}");
+        //   waiting：视频卡顿即暂停音频；playing：恢复时一次性对齐音频进度再继续
+        h.append("function wireAudioHooks(){var v=player.el_.querySelector('video');v.addEventListener('seeked',function(){if(aEl)aEl.currentTime=v.currentTime});v.addEventListener('ratechange',function(){if(aEl)aEl.playbackRate=v.playbackRate});v.addEventListener('volumechange',function(){if(aEl)aEl.volume=v.muted?0:player.volume()});"
+                + "v.addEventListener('waiting',function(){videoStalled=true;if(aEl&&!aEl.paused)aEl.pause()});"
+                + "v.addEventListener('playing',function(){if(videoStalled){videoStalled=false;if(aEl&&usingDash){try{aEl.currentTime=v.currentTime}catch(e){}if(aEl.paused)aEl.play().catch(function(){})}}})}");
 
         // Quality menu outside video bar —— 切换纯前端换轨，不重调 API
         h.append("function updateQbtn(){var b=document.getElementById('qbtn');if(!playData)return;var idx=(playData.acceptQuality||[]).indexOf(curQn);b.childNodes[0].textContent=idx>=0?playData.acceptDescription[idx]:'自动'}");
