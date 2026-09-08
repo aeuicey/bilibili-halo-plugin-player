@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URLDecoder;
@@ -156,29 +157,36 @@ public class BilibiliApiService {
             log.info("轮询状态: statusCode={}, hasUrl={}", statusCode, data.has("url") && !data.get("url").isNull());
 
             if (statusCode == 0) {
-                if (data.has("url") && !data.get("url").isNull()) {
+                // 新版接口：SESSDATA 通过响应头 Set-Cookie 下发
+                String sess = extractCookie(response.headers(), "SESSDATA");
+                if (sess != null && !sess.isEmpty()) {
+                    log.info("从响应头Set-Cookie提取到SESSDATA, 长度={}", sess.length());
+                } else if (data.has("url") && !data.get("url").isNull()) {
                     String redirectUrl = data.get("url").asText();
                     log.info("扫码成功，回调URL前100字符: {}", redirectUrl.length() > 100 ? redirectUrl.substring(0, 100) + "..." : redirectUrl);
 
+                    // 旧版接口：SESSDATA 在回调URL参数中
                     Map<String, String> cookies = parseUrlParams(redirectUrl);
                     log.info("从回调URL解析到参数: {}", cookies.keySet());
+                    sess = cookies.get("SESSDATA");
 
-                    String sess = cookies.get("SESSDATA");
-                    if (sess != null && !sess.isEmpty()) {
-                        String decoded = URLDecoder.decode(sess, StandardCharsets.UTF_8);
-                        log.info("提取到SESSDATA, 原始长度={}, 解码后长度={}", sess.length(), decoded.length());
-                        setSessdata(decoded);
-                        result.put("status", "success");
-                        result.put("message", "登录成功");
-                    } else {
-                        log.error("回调URL中未找到SESSDATA参数, 解析到的参数: {}", cookies);
-                        result.put("status", "error");
-                        result.put("message", "未找到SESSDATA");
+                    if (sess == null || sess.isEmpty()) {
+                        // ticket 形式的 crossDomain URL：请求该地址从 Set-Cookie 取 SESSDATA
+                        log.info("回调URL无SESSDATA参数，尝试请求crossDomain地址获取Cookie...");
+                        sess = fetchSessdataFromCrossDomain(redirectUrl);
                     }
+                }
+
+                if (sess != null && !sess.isEmpty()) {
+                    String decoded = URLDecoder.decode(sess, StandardCharsets.UTF_8);
+                    log.info("提取到SESSDATA, 原始长度={}, 解码后长度={}", sess.length(), decoded.length());
+                    setSessdata(decoded);
+                    result.put("status", "success");
+                    result.put("message", "登录成功");
                 } else {
-                    log.warn("statusCode=0但url字段为空或null");
-                    result.put("status", "pending");
-                    result.put("message", "等待确认");
+                    log.error("未能从响应头/回调URL/crossDomain获取SESSDATA");
+                    result.put("status", "error");
+                    result.put("message", "未找到SESSDATA");
                 }
             } else if (statusCode == 86038) {
                 log.info("二维码已过期");
@@ -223,6 +231,40 @@ public class BilibiliApiService {
             log.error("解析URL参数失败: {}", e.getMessage());
         }
         return params;
+    }
+
+    /** 从响应头 Set-Cookie 中提取指定 Cookie 的值 */
+    private static String extractCookie(HttpHeaders headers, String name) {
+        try {
+            for (String cookie : headers.allValues("Set-Cookie")) {
+                for (String pair : cookie.split(";")) {
+                    String[] kv = pair.trim().split("=", 2);
+                    if (kv.length == 2 && kv[0].equalsIgnoreCase(name)) {
+                        return kv[1];
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /** ticket 形式的 crossDomain 回调：请求该地址并从响应 Set-Cookie 中取 SESSDATA */
+    private String fetchSessdataFromCrossDomain(String url) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("User-Agent", USER_AGENT)
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = sendWithTimeout(request, 8);
+            String sess = extractCookie(resp.headers(), "SESSDATA");
+            log.info("crossDomain请求完成: status={}, 提取到SESSDATA={}", resp.statusCode(), sess != null);
+            return sess;
+        } catch (Exception e) {
+            log.error("crossDomain请求失败: {}", e.getMessage());
+            return null;
+        }
     }
 
     public String checkLoginStatus() throws Exception {
