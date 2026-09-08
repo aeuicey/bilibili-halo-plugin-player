@@ -2,139 +2,114 @@
 
 [![Build](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml/badge.svg)](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml)
 
-为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例。
+为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B 站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例、智能省流分发。
 
 <img width="1357" height="1692" alt="image" src="https://github.com/user-attachments/assets/8ec6109b-2c2b-43c3-ae55-6bee598196aa" />
 
-
 ## 功能特性
 
-- **扫码登录** — 在插件管理后台生成 B站 登录二维码，扫码授权后自动持久化登录状态
-- **多清晰度支持** — 360P / 480P / 720P / 1080P / 1080P60 / 4K，登录后解锁更高画质（需大会员）
-- **DASH 音画分离播放** — 视频 `<video>` + 隐藏 `<audio>` 双元素 `requestAnimationFrame` 毫秒级同步
-- **分辨率自适应** — 自动识别横屏(16:9)、竖屏(9:16)、方形视频，嵌入代码 + 播放器同步对应画幅比例
-- **后台管理** — 输入 BV 号即可生成嵌入代码，一键复制，粘贴到文章 HTML 编辑器即可使用
-- **智能省流** — 三级流分发：浏览器直连（no-referrer）→ Cloudflare Worker 代理 → 服务器代理兜底，观众播放不再只消耗服务器带宽
-- **实时日志** — 内置调试日志面板，实时推送后端请求日志，方便排查问题
-- **GitHub Actions 自动构建** — 每次推送自动编译生成 JAR 包
+- **扫码登录** — 管理后台生成 B 站登录二维码，扫码授权后自动持久化登录状态，解锁 1080P 及以上清晰度（4K 需大会员）
+- **多清晰度支持** — 360P ~ 8K，播放页内一键切换，切换不中断播放进度
+- **DASH 音画分离播放** — `<video>` + 隐藏 `<audio>` 双元素逐帧同步，零外部依赖
+- **智能省流** — 三级流分发：浏览器直连 → Cloudflare Worker 代理 → 服务器代理兜底，观众播放不再只消耗服务器带宽
+- **播放容错** — CDN 多地址回退、解码失败自动换编码/降清晰度、DASH 失败自动切 MP4 单文件
+- **分辨率自适应** — 自动识别横屏/竖屏/方形视频，嵌入代码与播放器同步画幅比例
+- **实时日志** — 内置日志面板，实时推送后端与播放器行为，方便排查问题
+
+## 现行方案
+
+- **视频解析**：WBI 签名调用 B 站 playurl 接口，四级降级链（全量 DASH → 基础 DASH → MP4 → html5 免鉴权兜底），视频信息接口带风控回退
+- **播放**：服务端生成自包含嵌入页（Video.js + DASH 双元素同步），一次拉流、前端本地换轨
+- **分发**：流地址候选链自动降级，默认直连 B 站 CDN，不占服务器带宽
+
+完整技术细节（解析机制、流选择算法、同步原理、容错链）见 **[docs/TECH.md](./docs/TECH.md)**。
 
 ## 安装
 
 1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 或 [Actions](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml) 页面下载最新 JAR 包
-2. 进入 Halo 后台 → 插件管理 → 上传插件，选择下载的 JAR 文件
-3. 在已安装插件列表中找到 "BiliBili播放器"，确认已启用
-4. （可选）打开插件设置页 → 播放设置：选择流分发模式；若已部署 Cloudflare Worker 代理，填写 Worker 地址（及访问令牌）以进一步节省服务器带宽
+2. Halo 后台 → 插件管理 → 上传插件，选择下载的 JAR 文件
+3. 在已安装插件列表中找到「BiliBili播放器」，确认已启用
 
-## 使用指南
+## 使用方法
 
 ### 1. 扫码登录（可选）
 
-> 登录后可获取 720P 及以上清晰度。未登录仅支持 480P。
+> 未登录时清晰度受限；登录后可用 1080P，大会员账号可到 4K。
 
-- 进入 Halo 后台 → 左侧菜单"B站播放器" → 账号登录
-- 点击"生成登录二维码"，使用 B站客户端扫码
-- 手机确认授权后，页面自动显示登录成功及用户信息
-- 登录状态持久化到服务器文件系统，Halo 重启后自动恢复
+- Halo 后台 → 左侧菜单「B 站播放器」→ 账号登录
+- 点击「生成登录二维码」，使用 B 站客户端扫码并确认
+- 登录状态持久化到服务器，Halo 重启后自动恢复
 
-### 2. 生成嵌入代码
+### 2. 配置流分发（可选，推荐）
 
-- 切换到"嵌入代码"标签页
-- 输入 B站视频链接或 BV 号，点击"解析"
-- 多 P 视频可选择对应分 P
-- 系统自动识别视频分辨率并显示横/竖屏标记
-- 点击"复制代码"，将 HTML 代码粘贴到文章编辑器的 HTML 视图中
-- 页面读者即可看到内嵌的 B站播放器
+- 插件管理 → 点击「BiliBili播放器」→ **设置**页签
+- **流分发模式**：默认 `smart`（直连优先，自动降级）；直连不可用时切 `worker`；`server` 为全部走服务器中转的保守模式
+- 已部署 Cloudflare Worker 代理时，填写 **Worker 地址**（和访问令牌，若在 Worker 端配置了的话）
 
-### 3. 读者端播放
+### 3. 生成嵌入代码
 
-- 播放器自动加载最高可用清晰度（默认 1080P，登录后）
-- 右下角画质按钮可切换清晰度
-- 横屏/竖屏视频自动匹配正确画幅比例
-- 支持完整 Video.js 控件（播放/暂停/进度/音量/画中画/全屏）
+- 「视频嵌入」页签 → 输入 B 站视频链接或 BV 号 → 解析
+- 多 P 视频可选择分 P；系统自动识别分辨率与横/竖屏
+- 点击复制代码，粘贴到文章编辑器的 HTML 视图即可
 
-## 技术路线
+### 4. 读者端播放
 
-### 音视频分离播放（DASH Dual Element Sync）
+- 默认 1080P 起播，画质菜单一键切换（4K/8K 取决于视频与登录状态）
+- 横/竖屏自动匹配画幅比例，支持倍速、画中画、全屏
+- 播放异常时自动降级换源，读者无感知
 
-B站 720P+ 视频采用 DASH 协议，音视频分离为独立 m4s 文件。本插件实现了一套**零外部依赖的音视频同步方案**：
+## 开发与部署
 
-```
-B站 playurl API (fnval=16)
-  → dash.video[] (m4s)  → <video src="proxy">
-  → dash.audio[] (m4s)  → <audio style="display:none" src="proxy">
-                              ↑
-                    requestAnimationFrame
-                     每帧同步 播放/暂停/seek/音量/倍速
-```
+### 环境要求
 
-**为何不用 MSE / WebAV？**
+- JDK 21（Gradle toolchain 编译目标）
+- Node.js 20+ 与 pnpm 10+（仅开发 UI 时需要）
 
-初期尝试了 `MediaSource` + `SourceBuffer` 手工推流，以及 `@webav/av-cliper` 的 `mixinMP4AndAudio` 合并方案。两者均因 Spring WebFlux 代理返回的 `ReadableStream` 不兼容浏览器原生 `pipeThrough` 接口而失败。
-
-**最终方案——Dual Element RAF Sync**，与 B站官方播放器思路一致（音画分离 + 客户端同步），但使用 `<video>` / `<audio>` 原生标签替代复杂的 MSE 管线：
-
-- `video` 元素加载视频轨 — 浏览器内置解码器，HEVC/AVC/AV1 自适应
-- `audio` 元素加载音频轨 — 隐藏 DOM，相同的代理 URL 路径
-- `requestAnimationFrame` 循环 — 每 16ms 校正一次音频时间，±150ms 容忍度
-- `seeked` / `ratechange` / `volumechange` 事件钩子 — 鼠标拖动进度条时间步响应
-
-### 清晰度策略
-
-| 清晰度 | qn | fnval | 返回格式 | 播放方式 |
-|--------|-----|-------|---------|---------|
-| 360P/480P/720P | 64 | 1 | durl MP4 直链 | 单一 `<video>` |
-| 1080P/4K+ | ≥80 | 16 | DASH 音视频分离 | 双元素 RAF 同步 |
-
-### 分辨率自适应
-
-- 嵌入代码：`aspect-ratio` 使用实际 `W/H` 而非硬编码 `16/9`
-- 播放器：`loadQuality` 后将轨道 `width/height` 注入 CSS 容器
-- 管理后台：分析视频后显示 `1920×1080 · Landscape` 或 `1080×1920 · Portrait`
-
-### 网络架构
-
-流地址按「流分发模式」生成有序候选，播放失败时自动降级到下一候选（保持播放进度）：
-
-| 模式 | 候选顺序 | 适用场景 |
-|------|---------|---------|
-| `smart`（默认） | 浏览器直连 → Worker 代理 → 服务器代理 | 已确认 CDN 放行空 Referer，最大化省流 |
-| `worker` | Worker 代理 → 服务器代理 | 直连被拦（如 CDN 策略变化）但 Worker 可用 |
-| `server` | 仅服务器代理 | 最保守，全部流量经服务器中转 |
-
-```
-smart 模式:
-浏览器 (no-referrer) ──直连──> B站 CDN
-        │ 失败降级
-        ├─────────> Cloudflare Worker (?url=&token=，伪装 Referer/Origin，透传 Range)
-        └─────────> /api/video/proxy?url=<Bilibili CDN>   ← 始终兜底
-                      → Spring WebFlux Flux<DataBuffer> streaming
-                        → B站 CDN (Referer/Origin 伪装)
-```
-
-Worker 地址与令牌在插件设置页（播放设置）中配置；留空 Worker 地址时 `smart` 自动跳过 Worker 层，直连失败直接落回服务器代理。
-
-## 开发
+### 构建
 
 ```bash
-# 克隆仓库
 git clone https://github.com/aeuicey/bilibili-halo-plugin-player.git
 cd bilibili-halo-plugin-player
 
-# 构建
 ./gradlew build -x test
-
-# JAR 包路径
-# build/libs/plugin-bilibili-player-X.X.X.jar
+# 产物：build/libs/plugin-bilibili-player-<version>.jar
 ```
 
-### 技术栈
+### 本地调试
 
-| 层级 | 技术 |
-|------|------|
-| 后端 | Java 21 / Spring WebFlux / Halo Plugin API |
-| 前端 | Vue 3 + TypeScript / Vite / Halo UI Components |
-| 构建 | Gradle / pnpm |
-| CI/CD | GitHub Actions (JDK 21 + Node 20 + pnpm 10) |
+```bash
+# 启动 Halo 2.24 开发实例（需 Docker），插件自动热部署
+# 控制台 http://localhost:18090/console，账号 admin / admin
+./gradlew halo:dev
+
+# 另开终端，UI 改动监听重建（产物输出到 src/main/resources/console/）
+cd ui && pnpm install && pnpm dev
+```
+
+### UI 开发命令
+
+```bash
+cd ui
+pnpm build        # 构建（含类型检查）
+pnpm type-check   # 仅类型检查
+pnpm lint         # 代码检查
+pnpm test:unit    # 单元测试
+```
+
+### CI/CD
+
+GitHub Actions 在每次推送时自动构建（JDK 21 + Node 20 + pnpm），产物见 Actions 页面的 Artifacts。
+
+### 部署 Cloudflare Worker 代理（可选）
+
+用于「智能省流」的第二级分发，观众播放流量经 CF 边缘节点而非你的服务器：
+
+1. 复制 [`workers/bili-proxy.js`](./workers/bili-proxy.js) 到 Cloudflare Dashboard → Workers → 新建 Worker 的编辑器中，部署
+2. （可选）在 Worker 设置中添加密钥变量 `PROXY_TOKEN` 防止被当开放代理滥用
+3. 绑定自定义域名（`workers.dev` 默认域名在中国大陆不可稳定访问，Worker 自定义域名要求域名 NS 托管至 Cloudflare）
+4. 在插件设置页填写 Worker 地址（及令牌）
+
+免费额度 10 万请求/天、流量不计费，约支撑每日上千次完整播放；量级更大时请评估 CF 服务条款限制。
 
 ## 更新日志
 
