@@ -14,6 +14,7 @@
 - **DASH 音画分离播放** — 视频 `<video>` + 隐藏 `<audio>` 双元素 `requestAnimationFrame` 毫秒级同步
 - **分辨率自适应** — 自动识别横屏(16:9)、竖屏(9:16)、方形视频，嵌入代码 + 播放器同步对应画幅比例
 - **后台管理** — 输入 BV 号即可生成嵌入代码，一键复制，粘贴到文章 HTML 编辑器即可使用
+- **智能省流** — 三级流分发：浏览器直连（no-referrer）→ Cloudflare Worker 代理 → 服务器代理兜底，观众播放不再只消耗服务器带宽
 - **实时日志** — 内置调试日志面板，实时推送后端请求日志，方便排查问题
 - **GitHub Actions 自动构建** — 每次推送自动编译生成 JAR 包
 
@@ -22,6 +23,7 @@
 1. 在 [Releases](https://github.com/aeuicey/bilibili-halo-plugin-player/releases) 或 [Actions](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml) 页面下载最新 JAR 包
 2. 进入 Halo 后台 → 插件管理 → 上传插件，选择下载的 JAR 文件
 3. 在已安装插件列表中找到 "BiliBili播放器"，确认已启用
+4. （可选）打开插件设置页 → 播放设置：选择流分发模式；若已部署 Cloudflare Worker 代理，填写 Worker 地址（及访问令牌）以进一步节省服务器带宽
 
 ## 使用指南
 
@@ -91,13 +93,25 @@ B站 playurl API (fnval=16)
 
 ### 网络架构
 
+流地址按「流分发模式」生成有序候选，播放失败时自动降级到下一候选（保持播放进度）：
+
+| 模式 | 候选顺序 | 适用场景 |
+|------|---------|---------|
+| `smart`（默认） | 浏览器直连 → Worker 代理 → 服务器代理 | 已确认 CDN 放行空 Referer，最大化省流 |
+| `worker` | Worker 代理 → 服务器代理 | 直连被拦（如 CDN 策略变化）但 Worker 可用 |
+| `server` | 仅服务器代理 | 最保守，全部流量经服务器中转 |
+
 ```
-浏览器 fetch
-  → /api/video/proxy?url=<Bilibili CDN>
-    → Spring WebFlux Flux<DataBuffer> streaming
-      → B站 CDN (Referer/Origin 伪装)
-        → 浏览器原生 <video>/<audio>
+smart 模式:
+浏览器 (no-referrer) ──直连──> B站 CDN
+        │ 失败降级
+        ├─────────> Cloudflare Worker (?url=&token=，伪装 Referer/Origin，透传 Range)
+        └─────────> /api/video/proxy?url=<Bilibili CDN>   ← 始终兜底
+                      → Spring WebFlux Flux<DataBuffer> streaming
+                        → B站 CDN (Referer/Origin 伪装)
 ```
+
+Worker 地址与令牌在插件设置页（播放设置）中配置；留空 Worker 地址时 `smart` 自动跳过 Worker 层，直连失败直接落回服务器代理。
 
 ## 开发
 

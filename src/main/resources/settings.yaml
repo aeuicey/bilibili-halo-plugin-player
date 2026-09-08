@@ -1,0 +1,30 @@
+apiVersion: v1alpha1
+kind: Setting
+metadata:
+  name: plugin-bilibili-player-settings
+spec:
+  forms:
+    - group: basic
+      label: 播放设置
+      formSchema:
+        - $formkit: select
+          name: proxyMode
+          label: 流分发模式
+          help: 决定观众播放视频时流地址的获取顺序，用于节省服务器带宽
+          value: smart
+          options:
+            - label: 智能省流（直连优先，自动降级）
+              value: smart
+            - label: Worker 代理优先
+              value: worker
+            - label: 始终服务器代理
+              value: server
+        - $formkit: text
+          name: workerUrl
+          label: Cloudflare Worker 代理地址
+          help: 部署的 Worker 完整地址，留空表示未配置
+          placeholder: https://bili-proxy.example.com
+        - $formkit: password
+          name: workerToken
+          label: Worker 访问令牌
+          help: 可选，Worker 端配置的访问令牌

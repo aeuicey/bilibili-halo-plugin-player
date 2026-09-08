@@ -44,8 +44,9 @@ cd ui && pnpm prettier
 - **`VideoController.java`** — REST endpoints:
   - Video info/playurl APIs (playurl defaults qn=127/fnval=3344 via fallback chain; explicit params bypass the chain). playurl responses carry additive fields: `fetchedAt` (stream URLs expire in 120min), `strategy` (dash-full/dash-basic/mp4/mp4-html5), `supportFormats`, `dash.dolby`, `dash.flac`
   - CDN proxy: `HttpClient` → `InputStream` → `Flux<DataBuffer>` streaming (Referer/Origin spoofed to bilibili.com)
-- **`EmbedPageGenerator.java`** — Generates the self-contained embed player HTML+JS (extracted from VideoController)
+- **`EmbedPageGenerator.java`** — Generates the self-contained embed player HTML+JS (extracted from VideoController). Three-tier stream delivery candidates injected from plugin settings: `smart` (browser direct w/ no-referrer → Cloudflare Worker proxy → server proxy fallback) / `worker` (Worker → server) / `server` (server proxy only)
 - **`LoginController.java`** — QR code login flow + log history/SSE streaming
+- **Plugin settings** (`src/main/resources/settings.yaml`, group `basic`): `proxyMode` (smart/worker/server, default smart), `workerUrl` (Cloudflare Worker proxy base), `workerToken` (optional); read via `ReactiveSettingFetcher.getSettingValue("basic")` in the embed endpoint with defensive fallbacks
 - API prefix: `/plugins/bilibili-player/api`
 
 ### Frontend (Vue 3 + TypeScript / Vite / pnpm)
@@ -60,8 +61,9 @@ The `/plugins/bilibili-player/embed` endpoint (rendered by `EmbedPageGenerator`)
 - **DASH dual-element sync**: `<video>` element for video + hidden `<audio>` element for audio, synced via `requestAnimationFrame` (every frame, ±150ms tolerance); audio stalled/buffered >1s behind video pauses video until audio recovers
 - **Single-fetch quality switching**: one playurl call fetches the full DASH track list; quality switches are pure client-side track swaps (re-fetch only on 403/CDN failure or after 110min)
 - **Track selection**: filter by target qn (fall to nearest lower `accept_quality` if missing), codec priority `avc1` > `av01`/`hev1` only when `canPlayType` says "probably", audio = highest bandwidth track
-- **Fallbacks**: CDN `backupUrl` on media error (keeps currentTime); 5s decode watchdog switches codec → lower qn → MP4 single-file mode (RAF sync disabled)
-- **CDN proxy**: all video/audio URLs go through `/api/video/proxy?url=` to spoof Referer/Origin
+- **Fallbacks**: on media error the element advances to the next candidate URL (keeps currentTime); video/audio elements track independent candidate indexes; 5s decode watchdog switches codec → lower qn → MP4 single-file mode (RAF sync disabled, MP4 `durl` also goes through `candidates()`)
+- **Three-tier stream delivery**: `candidates([baseUrl, backupUrl])` builds an ordered URL list by `PROXY_MODE` — tier-first, `baseUrl`→`backupUrl` within a tier. `smart` = direct (page sets `<meta name="referrer" content="no-referrer">`, B站 CDN allows empty Referer) → Worker (`WORKER_BASE?url=…&token=…`, only when configured) → server proxy (always last); `worker` = Worker → server; `server` = server proxy only. Candidate switches report `proxyTier` telemetry (tier + idx)
+- **CDN proxy**: `/api/video/proxy?url=` spoofs Referer/Origin and streams via `Flux<DataBuffer>`; remains the final fallback in every mode
 - **Unmute hint**: autoplay starts muted, button appears for user to unmute
 - **Player telemetry**: sends events to `/api/player/log` (play, pause, seek, quality switch, codec/bandwidth choice, fallback reasons, errors)
 

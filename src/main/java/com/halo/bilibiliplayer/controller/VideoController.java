@@ -10,6 +10,8 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import run.halo.app.plugin.ReactiveSettingFetcher;
+import tools.jackson.databind.JsonNode;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -25,12 +27,15 @@ public class VideoController {
 
     private final BilibiliApiService bilibiliApiService;
     private final LogService logService;
+    private final ReactiveSettingFetcher settingFetcher;
     private final HttpClient proxyClient;
     private final DataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
-    public VideoController(BilibiliApiService bilibiliApiService, LogService logService) {
+    public VideoController(BilibiliApiService bilibiliApiService, LogService logService,
+                           ReactiveSettingFetcher settingFetcher) {
         this.bilibiliApiService = bilibiliApiService;
         this.logService = logService;
+        this.settingFetcher = settingFetcher;
         this.proxyClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -192,10 +197,59 @@ public class VideoController {
         });
     }
 
+    /** 三级流分发配置：smart（直连→Worker→服务器）/ worker（Worker→服务器）/ server（仅服务器） */
+    private record StreamProxyConfig(String proxyMode, String workerUrl, String workerToken) {
+        static final StreamProxyConfig DEFAULT = new StreamProxyConfig("smart", "", "");
+    }
+
+    /** 读取播放设置；setting 不存在或字段缺失时回退 smart、无 Worker；非法 Worker 地址按未配置处理 */
+    private StreamProxyConfig readProxyConfig(JsonNode setting) {
+        String mode = "smart";
+        String workerUrl = "";
+        String workerToken = "";
+        if (setting != null && !setting.isMissingNode() && !setting.isNull()) {
+            JsonNode m = setting.path("proxyMode");
+            if (m.isString()) {
+                String v = m.asString();
+                if (v.equals("smart") || v.equals("worker") || v.equals("server")) {
+                    mode = v;
+                }
+            }
+            JsonNode u = setting.path("workerUrl");
+            if (u.isString()) workerUrl = u.asString().trim();
+            JsonNode t = setting.path("workerToken");
+            if (t.isString()) workerToken = t.asString().trim();
+        }
+        if (!workerUrl.isEmpty()) {
+            while (workerUrl.endsWith("/")) {
+                workerUrl = workerUrl.substring(0, workerUrl.length() - 1);
+            }
+            boolean valid = false;
+            try {
+                URI uri = URI.create(workerUrl);
+                String scheme = uri.getScheme();
+                valid = uri.getHost() != null
+                        && ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme));
+            } catch (Exception ignored) {
+            }
+            if (!valid) {
+                logService.warn("[settings] 非法 Worker 地址，按未配置处理: {}", workerUrl);
+                workerUrl = "";
+            }
+        }
+        return new StreamProxyConfig(mode, workerUrl, workerToken);
+    }
+
     @GetMapping(value = "/plugins/bilibili-player/embed", produces = MediaType.TEXT_HTML_VALUE)
     public Mono<ResponseEntity<String>> embedPlayer(@RequestParam String bvid, @RequestParam(defaultValue = "") String cid) {
-        return Mono.fromCallable(() ->
-                ResponseEntity.ok().cacheControl(CacheControl.noCache())
-                        .body(EmbedPageGenerator.build(bvid, cid)));
+        return settingFetcher.getSettingValue("basic")
+                .map(this::readProxyConfig)
+                .switchIfEmpty(Mono.just(StreamProxyConfig.DEFAULT))
+                .onErrorResume(e -> {
+                    logService.warn("[settings] 读取播放设置失败，回退默认 smart 模式: {}", e.getMessage());
+                    return Mono.just(StreamProxyConfig.DEFAULT);
+                })
+                .map(cfg -> ResponseEntity.ok().cacheControl(CacheControl.noCache())
+                        .body(EmbedPageGenerator.build(bvid, cid, cfg.proxyMode(), cfg.workerUrl(), cfg.workerToken())));
     }
 }
