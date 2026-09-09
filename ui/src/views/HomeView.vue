@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
 import { stores } from '@halo-dev/ui-shared'
 import QRCode from 'qrcode'
@@ -107,15 +107,56 @@ const embedCid = ref('')
 const embedLoading = ref(false)
 const embedCode = ref('')
 const embedPreview = ref('')
-type WidthPreset = '100' | '640' | '860' | 'custom'
-const widthPresets: Array<{ id: WidthPreset; label: string }> = [
-  { id: '100', label: '自适应 100%' },
-  { id: '640', label: '640px' },
-  { id: '860', label: '860px' },
-  { id: 'custom', label: '自定义' },
+
+/* ---------- 尺寸与样式（重设计：模式 × 数值解耦） ---------- */
+type WidthMode = 'fluid' | 'fixed'
+type RadiusPreset = '0' | '8' | '16'
+type AlignMode = 'center' | 'left'
+
+const WIDTH_MIN = 200
+const WIDTH_MAX = 2000
+const WIDTH_DEFAULT = 640
+const WIDTH_SNAPS = [480, 640, 860]
+const WIDTH_SNAP_TOL = 14
+// 预览/读数使用的参考正文栏宽，与典型主题正文列一致
+const REF_COLUMN_WIDTH = 760
+
+const widthModes: Array<{ id: WidthMode; label: string }> = [
+  { id: 'fluid', label: '自适应栏宽' },
+  { id: 'fixed', label: '限制最大宽度' },
 ]
-const widthPreset = ref<WidthPreset>('100')
-const customWidth = ref(720)
+const radiusPresets: Array<{ id: RadiusPreset; label: string }> = [
+  { id: '0', label: '直角' },
+  { id: '8', label: '8px' },
+  { id: '16', label: '16px' },
+]
+const alignModes: Array<{ id: AlignMode; label: string }> = [
+  { id: 'center', label: '居中' },
+  { id: 'left', label: '靠左' },
+]
+
+const widthMode = ref<WidthMode>('fluid')
+const maxWidth = ref(WIDTH_DEFAULT)
+const radiusPreset = ref<RadiusPreset>('8')
+const alignMode = ref<AlignMode>('center')
+const widthClamped = ref(false)
+let clampHintTimer: ReturnType<typeof setTimeout> | null = null
+
+const snapTicks = computed(() =>
+  WIDTH_SNAPS.map((v) => ({
+    value: v,
+    left: `${(((v - WIDTH_MIN) / (WIDTH_MAX - WIDTH_MIN)) * 100).toFixed(2)}%`,
+  })),
+)
+const widthFillPercent = computed(
+  () => `${(((maxWidth.value - WIDTH_MIN) / (WIDTH_MAX - WIDTH_MIN)) * 100).toFixed(2)}%`,
+)
+const widthModeHint = computed(() =>
+  widthMode.value === 'fixed'
+    ? `播放器不超过设定宽度，在正文栏中${alignMode.value === 'center' ? '居中' : '靠左'}显示。`
+    : '播放器撑满正文栏，高度按真实画幅比自动推导。',
+)
+
 const videoInfo = ref<null | {
   title: string
   pic: string
@@ -167,6 +208,38 @@ const aspectBoxStyle = computed(() => {
   return { width: `${bw.toFixed(1)}px`, height: `${bh.toFixed(1)}px` }
 })
 
+// 宽高联动读数：按真实画幅比推出嵌入后的实际高度
+const resultSizeLabel = computed(() => {
+  const w = videoInfo.value?.width ?? 0
+  const h = videoInfo.value?.height ?? 0
+  if (w <= 0 || h <= 0) return ''
+  if (widthMode.value === 'fixed') {
+    const px = clampWidth(maxWidth.value)
+    const rh = Math.round((px * h) / w)
+    const extra =
+      px > REF_COLUMN_WIDTH ? `，超过参考栏宽时实显 ${REF_COLUMN_WIDTH}px 宽` : ''
+    return `${px} × ${rh} px${extra}`
+  }
+  const rh = Math.round((REF_COLUMN_WIDTH * h) / w)
+  return `100% × 自动（按 ${REF_COLUMN_WIDTH}px 栏宽 ≈ ${REF_COLUMN_WIDTH} × ${rh} px）`
+})
+
+// 嵌入代码预览随尺寸/圆角/对齐联动
+const previewStyle = computed(() => {
+  const style: Record<string, string> = {
+    aspectRatio: videoAspectRatio.value,
+    borderRadius: `${radiusPreset.value}px`,
+  }
+  if (widthMode.value === 'fixed') {
+    style.maxWidth = `${clampWidth(maxWidth.value)}px`
+    if (alignMode.value === 'center') {
+      style.marginLeft = 'auto'
+      style.marginRight = 'auto'
+    }
+  }
+  return style
+})
+
 /* ---------- Logs ---------- */
 const logEntries = ref<Array<{ time: string; level: string; msg: string }>>([])
 const logLevels = ['ALL', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const
@@ -184,11 +257,16 @@ const filteredLogs = computed(() =>
 
 /* ---------- Lifecycle ---------- */
 onMounted(async () => {
+  restoreSizeStyle()
   await checkLogin()
 })
 onUnmounted(() => {
   stopPoll()
   stopLogs()
+  if (clampHintTimer) {
+    clearTimeout(clampHintTimer)
+    clampHintTimer = null
+  }
 })
 
 /* ---------- Login logic ---------- */
@@ -384,10 +462,92 @@ async function fetchVideo() {
   }
 }
 
+/* ---------- 尺寸与样式逻辑 ---------- */
 function clampWidth(n: number): number {
-  if (!Number.isFinite(n)) return 720
-  return Math.min(2000, Math.max(200, Math.round(n)))
+  if (!Number.isFinite(n)) return WIDTH_DEFAULT
+  return Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(n)))
 }
+
+function snapWidth(n: number): number {
+  for (const s of WIDTH_SNAPS) {
+    if (Math.abs(n - s) <= WIDTH_SNAP_TOL) return s
+  }
+  return n
+}
+
+function showClampHint() {
+  widthClamped.value = true
+  if (clampHintTimer) clearTimeout(clampHintTimer)
+  clampHintTimer = setTimeout(() => {
+    widthClamped.value = false
+  }, 2400)
+}
+
+function setWidthMode(mode: WidthMode) {
+  widthMode.value = mode
+  regenerateCode()
+}
+function setRadiusPreset(radius: RadiusPreset) {
+  radiusPreset.value = radius
+  regenerateCode()
+}
+function setAlignMode(align: AlignMode) {
+  alignMode.value = align
+  regenerateCode()
+}
+
+function onWidthSlider(e: Event) {
+  maxWidth.value = clampWidth(snapWidth(Number((e.target as HTMLInputElement).value)))
+  regenerateCode()
+}
+
+function onWidthFieldInput() {
+  if (Number.isFinite(maxWidth.value)) regenerateCode()
+}
+
+function onWidthChange() {
+  const raw = Number(maxWidth.value)
+  if (!Number.isFinite(raw)) {
+    maxWidth.value = clampWidth(NaN)
+    regenerateCode()
+    return
+  }
+  const clamped = clampWidth(raw)
+  if (clamped !== Math.round(raw)) showClampHint()
+  maxWidth.value = clamped
+  regenerateCode()
+}
+
+const SIZE_STYLE_STORAGE_KEY = 'bp-size-style-v1'
+function persistSizeStyle() {
+  try {
+    localStorage.setItem(
+      SIZE_STYLE_STORAGE_KEY,
+      JSON.stringify({
+        mode: widthMode.value,
+        width: maxWidth.value,
+        radius: radiusPreset.value,
+        align: alignMode.value,
+      }),
+    )
+  } catch {
+    /* 无痕模式等场景下不可写，忽略 */
+  }
+}
+function restoreSizeStyle() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIZE_STYLE_STORAGE_KEY) || 'null')
+    if (!saved || typeof saved !== 'object') return
+    if (saved.mode === 'fluid' || saved.mode === 'fixed') widthMode.value = saved.mode
+    if (Number.isFinite(saved.width)) maxWidth.value = clampWidth(saved.width)
+    if (saved.radius === '0' || saved.radius === '8' || saved.radius === '16')
+      radiusPreset.value = saved.radius
+    if (saved.align === 'center' || saved.align === 'left') alignMode.value = saved.align
+  } catch {
+    /* 忽略损坏的缓存 */
+  }
+}
+watch([widthMode, maxWidth, radiusPreset, alignMode], persistSizeStyle)
 
 function generateCode(bvid: string, cid: string) {
   if (!bvid || !cid) {
@@ -396,12 +556,14 @@ function generateCode(bvid: string, cid: string) {
     return
   }
   const src = `${siteOrigin.value}${EMBED_PATH}?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`
+  const radius = `${radiusPreset.value}px`
 
-  if (widthPreset.value === '100') {
-    embedCode.value = `<iframe src="${src}" style="width:100%;aspect-ratio:${videoAspectRatio.value};border:none;border-radius:8px" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe>`
+  if (widthMode.value === 'fluid') {
+    embedCode.value = `<iframe src="${src}" style="width:100%;aspect-ratio:${videoAspectRatio.value};border:none;border-radius:${radius}" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe>`
   } else {
-    const px = widthPreset.value === 'custom' ? clampWidth(customWidth.value) : Number(widthPreset.value)
-    const containerStyle = `position:relative;width:100%;max-width:${px}px;aspect-ratio:${videoAspectRatio.value};border-radius:8px;overflow:hidden;margin:16px 0`
+    const px = clampWidth(maxWidth.value)
+    const margin = alignMode.value === 'center' ? '16px auto' : '16px 0'
+    const containerStyle = `position:relative;width:100%;max-width:${px}px;aspect-ratio:${videoAspectRatio.value};border-radius:${radius};overflow:hidden;margin:${margin}`
     const iframeStyle = `position:absolute;top:0;left:0;width:100%;height:100%;border:none`
     embedCode.value = `<div data-bilibili-player="true" data-bvid="${bvid}" data-cid="${cid}" style="${containerStyle}"><iframe src="${src}" style="${iframeStyle}" allowfullscreen allow="autoplay;encrypted-media" loading="lazy"></iframe></div>`
   }
@@ -411,11 +573,6 @@ function generateCode(bvid: string, cid: string) {
 function regenerateCode() {
   const parsed = parseBvid(embedBvid.value)
   if (parsed) generateCode(parsed.bvid, embedCid.value)
-}
-
-function selectPreset(value: WidthPreset) {
-  widthPreset.value = value
-  regenerateCode()
 }
 
 async function copyCode() {
@@ -731,34 +888,119 @@ function onTabChange(id: string | number) {
         <div class="bp-section">
           <div v-if="videoInfo" class="bp-form">
             <div class="bp-form-row">
-              <span class="bp-form-label">尺寸预设</span>
-              <div class="bp-segmented">
+              <span class="bp-form-label">宽度模式</span>
+              <div class="bp-form-field">
+                <div class="bp-segmented" role="radiogroup" aria-label="宽度模式">
+                  <button
+                    v-for="opt in widthModes"
+                    :key="opt.id"
+                    class="bp-segmented__item"
+                    :class="{ active: widthMode === opt.id }"
+                    role="radio"
+                    :aria-checked="widthMode === opt.id"
+                    @click="setWidthMode(opt.id)"
+                  >
+                    {{ opt.label }}
+                  </button>
+                </div>
+                <p class="bp-form-hint">{{ widthModeHint }}</p>
+              </div>
+            </div>
+
+            <div class="bp-form-row" :class="{ 'is-disabled': widthMode !== 'fixed' }">
+              <span class="bp-form-label">最大宽度</span>
+              <div class="bp-form-field">
+                <div class="bp-width-ctl">
+                  <div class="bp-slider-wrap">
+                    <input
+                      class="bp-slider"
+                      type="range"
+                      :min="WIDTH_MIN"
+                      :max="WIDTH_MAX"
+                      step="10"
+                      :value="maxWidth"
+                      :disabled="widthMode !== 'fixed'"
+                      :style="{ '--fill': widthFillPercent }"
+                      aria-label="最大宽度（像素）"
+                      @input="onWidthSlider"
+                    />
+                    <div class="bp-slider-ticks" aria-hidden="true">
+                      <span class="bp-slider-tick" style="left: 0%; transform: none">{{
+                        WIDTH_MIN
+                      }}</span>
+                      <span
+                        v-for="t in snapTicks"
+                        :key="t.value"
+                        class="bp-slider-tick bp-slider-tick--snap"
+                        :style="{ left: t.left }"
+                        >{{ t.value }}</span
+                      >
+                      <span
+                        class="bp-slider-tick"
+                        style="left: 100%; transform: translateX(-100%)"
+                        >{{ WIDTH_MAX }}</span
+                      >
+                    </div>
+                  </div>
+                  <div class="bp-width-input">
+                    <input
+                      v-model.number="maxWidth"
+                      class="bp-input"
+                      type="number"
+                      :min="WIDTH_MIN"
+                      :max="WIDTH_MAX"
+                      step="10"
+                      :disabled="widthMode !== 'fixed'"
+                      aria-label="最大宽度数值"
+                      @input="onWidthFieldInput"
+                      @change="onWidthChange"
+                    />
+                    <span class="bp-width-input__unit">px</span>
+                  </div>
+                </div>
+                <p class="bp-clamp-hint" :class="{ show: widthClamped }" role="status">
+                  已限制在 {{ WIDTH_MIN }} – {{ WIDTH_MAX }} px 范围内
+                </p>
+              </div>
+            </div>
+
+            <div class="bp-form-row">
+              <span class="bp-form-label">圆角</span>
+              <div class="bp-segmented" role="radiogroup" aria-label="圆角">
                 <button
-                  v-for="opt in widthPresets"
+                  v-for="opt in radiusPresets"
                   :key="opt.id"
                   class="bp-segmented__item"
-                  :class="{ active: widthPreset === opt.id }"
-                  @click="selectPreset(opt.id)"
+                  :class="{ active: radiusPreset === opt.id }"
+                  role="radio"
+                  :aria-checked="radiusPreset === opt.id"
+                  @click="setRadiusPreset(opt.id)"
                 >
                   {{ opt.label }}
                 </button>
               </div>
             </div>
-            <div v-if="widthPreset === 'custom'" class="bp-form-row">
-              <span class="bp-form-label">自定义宽度</span>
-              <div class="bp-width-input">
-                <input
-                  v-model.number="customWidth"
-                  class="bp-input"
-                  type="number"
-                  min="200"
-                  max="2000"
-                  step="10"
-                  @input="regenerateCode"
-                />
-                <span class="bp-width-input__unit">px</span>
+
+            <div class="bp-form-row" :class="{ 'is-disabled': widthMode !== 'fixed' }">
+              <span class="bp-form-label">对齐</span>
+              <div class="bp-form-field">
+                <div class="bp-segmented" role="radiogroup" aria-label="对齐方式">
+                  <button
+                    v-for="opt in alignModes"
+                    :key="opt.id"
+                    class="bp-segmented__item"
+                    :class="{ active: alignMode === opt.id }"
+                    role="radio"
+                    :aria-checked="alignMode === opt.id"
+                    @click="setAlignMode(opt.id)"
+                  >
+                    {{ opt.label }}
+                  </button>
+                </div>
+                <p class="bp-form-hint">仅「限制最大宽度」时生效；自适应模式恒为撑满。</p>
               </div>
             </div>
+
             <div class="bp-form-row">
               <span class="bp-form-label">画幅比例</span>
               <div class="bp-aspect">
@@ -770,6 +1012,9 @@ function onTabChange(id: string | number) {
                   <span class="bp-aspect__size">
                     {{ videoInfo.width }}&times;{{ videoInfo.height
                     }}<template v-if="videoOrientation"> &middot; {{ videoOrientation }}</template>
+                  </span>
+                  <span v-if="resultSizeLabel" class="bp-aspect__result">
+                    嵌入结果 {{ resultSizeLabel }}
                   </span>
                 </div>
               </div>
@@ -795,7 +1040,7 @@ function onTabChange(id: string | number) {
               </VButton>
             </div>
             <pre class="bp-code-block"><code>{{ embedCode }}</code></pre>
-            <div class="bp-preview">
+            <div class="bp-preview" :style="previewStyle">
               <iframe
                 v-if="embedPreview"
                 :src="embedPreview"
@@ -1045,6 +1290,11 @@ function onTabChange(id: string | number) {
   border-color: var(--color-primary, #4ccba0);
   box-shadow: 0 0 0 3px rgba(76, 203, 160, 0.15);
 }
+.bp-input:disabled {
+  background: #f7f8fa;
+  color: #86909c;
+  cursor: not-allowed;
+}
 
 .bp-video {
   display: flex;
@@ -1149,7 +1399,7 @@ function onTabChange(id: string | number) {
 }
 .bp-form-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 16px;
 }
 .bp-form-label {
@@ -1157,12 +1407,34 @@ function onTabChange(id: string | number) {
   flex-shrink: 0;
   font-size: 13px;
   color: #4e5969;
+  padding-top: 8px;
+}
+.bp-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.bp-form-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #86909c;
+}
+.bp-form-row.is-disabled .bp-form-field,
+.bp-form-row.is-disabled .bp-segmented {
+  opacity: 0.45;
+  pointer-events: none;
 }
 @media (max-width: 640px) {
   .bp-form-row {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+  }
+  .bp-form-label {
+    padding-top: 0;
   }
 }
 
@@ -1196,6 +1468,101 @@ function onTabChange(id: string | number) {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
+/* 最大宽度：滑杆 + 吸附刻度 + 数字输入 */
+.bp-width-ctl {
+  display: grid;
+  grid-template-columns: 1fr 108px;
+  gap: 16px;
+  align-items: center;
+  max-width: 560px;
+}
+@media (max-width: 640px) {
+  .bp-width-ctl {
+    grid-template-columns: 1fr;
+    max-width: none;
+    width: 100%;
+  }
+}
+.bp-slider-wrap {
+  position: relative;
+  padding-bottom: 20px;
+}
+.bp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  margin: 12px 0 0;
+  background: linear-gradient(
+    to right,
+    #fb7299 0 var(--fill, 24%),
+    rgb(229, 230, 235) var(--fill, 24%)
+  );
+  outline-offset: 4px;
+  cursor: pointer;
+}
+.bp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #fb7299;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  cursor: grab;
+}
+.bp-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #fb7299;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  cursor: grab;
+}
+.bp-slider:disabled {
+  cursor: not-allowed;
+}
+.bp-slider-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 32px;
+  height: 16px;
+}
+.bp-slider-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: #86909c;
+  white-space: nowrap;
+}
+.bp-slider-tick::before {
+  content: '';
+  display: block;
+  width: 1px;
+  height: 4px;
+  background: #c9cdd4;
+  margin: 0 auto 2px;
+}
+.bp-slider-tick--snap {
+  color: #1f2329;
+  font-weight: 600;
+}
+.bp-clamp-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #fb7299;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.bp-clamp-hint.show {
+  opacity: 1;
+}
+
 .bp-width-input {
   display: flex;
   align-items: center;
@@ -1203,7 +1570,7 @@ function onTabChange(id: string | number) {
 }
 .bp-width-input .bp-input {
   flex: none;
-  width: 140px;
+  width: 100%;
 }
 .bp-width-input__unit {
   font-size: 13px;
@@ -1244,6 +1611,11 @@ function onTabChange(id: string | number) {
 .bp-aspect__size {
   font-size: 12px;
   color: #86909c;
+}
+.bp-aspect__result {
+  font-size: 12px;
+  color: #4e5969;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
 .bp-chip {
