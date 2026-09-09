@@ -60,7 +60,9 @@ cd ui && pnpm prettier
 ### Embed Player (server-generated inline page)
 
 The `/plugins/bilibili-player/embed` endpoint (rendered by `EmbedPageGenerator`) returns a self-contained HTML page with:
-- **Video.js** loaded from CDN with Bilibili pink theme CSS overrides, playbackRates `[0.5..2]`
+- **nplayer** (zero-dependency UMD, CSS auto-injected) loaded from unpkg CDN with jsdelivr fallback via `document.write`; theme/progress/volume colors set to Bilibili pink `#fb7299`; `settings:['speed']` enables the built-in playback-rate panel (0.25–2)
+- **Custom control items**: quality (text button + `NPlayer.Popover` upward panel, client-side track switch, pink highlight for active item, closes on mask-click/Esc/`ControlHide`) and PiP (`requestPictureInPicture` button, hidden when unsupported); both are plain `ControlItem` objects inlined into `controls`/`bpControls` arrays (nplayer resolves named items at construction, so custom items must be passed as objects, not registered later)
+- **Self-built video element**: the `<video>` (autoplay/muted/playsinline) is created in JS and passed via `opts.video`; all playback logic operates on this native element (`player.video`), nplayer is only the UI shell
 - **DASH dual-element sync**: `<video>` element for video + hidden `<audio>` element for audio, synced via `requestAnimationFrame` (every frame, ±150ms tolerance); audio stalled/buffered >1s behind video pauses video until audio recovers
 - **Single-fetch quality switching**: one playurl call fetches the full DASH track list; quality switches are pure client-side track swaps (re-fetch only on 403/CDN failure or after 110min)
 - **Track selection**: filter by target qn (fall to nearest lower `accept_quality` if missing), codec priority `avc1` > `av01`/`hev1` only when `canPlayType` says "probably", audio = highest bandwidth track
