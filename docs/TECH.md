@@ -108,6 +108,16 @@ smart 模式:
 - Worker 地址与令牌在插件设置页配置；留空时 `smart` 自动跳过 Worker 层
 - Worker 脚本见 [`workers/bili-proxy.js`](../workers/bili-proxy.js)，含域名白名单与可选令牌校验
 
+### Worker 分块边缘缓存
+
+`workers/bili-proxy.js` 内置 2MB 块对齐缓存，缓解 CF 链路（观众 → CF 边缘 → B 站 CDN）的逐次回源延迟：
+
+- Range 请求归一化到 2MB 块边界，块缓存在 CF 边缘（`caches.default`，key = 流 URL 哈希 + 块序号）
+- 命中即免回源：单块 Range 直接切片返回；少量跨块内存拼装；大范围（如 `bytes=0-` 渐进加载）逐块流式输出，客户端断开即停
+- 无 Range 的整体请求流式透传，同时 `tee()` 后台按块写入缓存
+- B 站流 URL 120 分钟过期，缓存块带 `x-cached-at` 时间戳，超 100 分钟自动失效重取；超 500MB 不缓存（CF 免费版单文件上限 512MB）
+- 收益：同一观众的 seek/重看/断线重连全部边缘命中；多观众在 URL 有效期内命中同一份缓存
+
 ## 五、播放容错链
 
 ```

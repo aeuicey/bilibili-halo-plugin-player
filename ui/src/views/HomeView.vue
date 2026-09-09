@@ -1467,6 +1467,11 @@ function onTabChange(id: string | number) {
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
+.bp-segmented__item:focus-visible {
+  outline: 2px solid #fb7299;
+  outline-offset: 1px;
+  color: #1f2329;
+}
 
 /* 最大宽度：滑杆 + 吸附刻度 + 数字输入 */
 .bp-width-ctl {
@@ -1524,6 +1529,10 @@ function onTabChange(id: string | number) {
 }
 .bp-slider:disabled {
   cursor: not-allowed;
+}
+.bp-slider:focus-visible {
+  outline: 2px solid #fb7299;
+  outline-offset: 4px;
 }
 .bp-slider-ticks {
   position: absolute;
@@ -1637,6 +1646,10 @@ function onTabChange(id: string | number) {
   background: var(--color-primary, #4ccba0);
   border-color: var(--color-primary, #4ccba0);
   color: #fff;
+}
+.bp-chip:focus-visible {
+  outline: 2px solid var(--color-primary, #4ccba0);
+  outline-offset: 1px;
 }
 .bp-chip.sm {
   padding: 2px 8px;
