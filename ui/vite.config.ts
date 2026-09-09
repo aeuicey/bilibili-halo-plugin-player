@@ -11,4 +11,11 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  build: {
+    lib: {
+      // Halo 按固定文件名 style.css 汇总加载插件样式，默认产物名 bilibili-player-ui.css 永远不会被加载；
+      // entry 由 @halo-dev/ui-plugin-bundler-kit 在构建时注入，此处仅需覆盖 CSS 产物名
+      cssFileName: 'style',
+    } as import('vite').LibraryOptions,
+  },
 })
