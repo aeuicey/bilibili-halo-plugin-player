@@ -15,6 +15,7 @@ interface VideoInfo {
   title: string
   pic: string
   ownerName: string
+  duration?: number
   pages?: VideoPage[]
   error?: string
 }
@@ -23,18 +24,28 @@ const props = defineProps(nodeViewProps)
 
 const bvid = computed(() => (props.node.attrs.bvid as string) || '')
 
-const aspectRatio = computed(() => {
+// 横竖屏标签沿用节点属性中的分辨率（配置时由 playurl 写入）
+const orientation = computed(() => {
   const w = Number(props.node.attrs.width)
   const h = Number(props.node.attrs.height)
-  return w > 0 && h > 0 ? `${w} / ${h}` : '16 / 9'
+  if (w <= 0 || h <= 0) return ''
+  return h > w ? '竖屏' : '横屏'
 })
 
 /* ---------- 节点卡片信息 ---------- */
 const videoInfo = ref<VideoInfo | null>(null)
+const infoLoading = ref(false)
 const coverFailed = ref(false)
 const coverSrc = computed(() =>
   videoInfo.value?.pic && !coverFailed.value ? proxyImage(videoInfo.value.pic) : '',
 )
+const durationText = computed(() => {
+  const d = Number(videoInfo.value?.duration)
+  if (!Number.isFinite(d) || d <= 0) return ''
+  const m = Math.floor(d / 60)
+  const s = Math.floor(d % 60)
+  return `${m}:${String(s).padStart(2, '0')}`
+})
 
 async function fetchVideoInfo(bv: string): Promise<VideoInfo> {
   const { data } = await axiosInstance.get(`${API_BASE}/video/info?bvid=${bv}`)
@@ -46,11 +57,14 @@ async function fetchVideoInfo(bv: string): Promise<VideoInfo> {
 async function loadCardInfo() {
   if (!bvid.value) return
   coverFailed.value = false
+  infoLoading.value = true
   try {
     videoInfo.value = await fetchVideoInfo(bvid.value)
   } catch {
     // 卡片信息拉取失败不阻塞编辑，仅退化为展示 bvid
     videoInfo.value = null
+  } finally {
+    infoLoading.value = false
   }
 }
 
@@ -141,25 +155,49 @@ onMounted(() => {
 </script>
 
 <template>
-  <NodeViewWrapper
-    class="bilibili-player-node"
-    :class="{ 'bilibili-player-node--selected': selected }"
-    :style="{ aspectRatio }"
-  >
+  <NodeViewWrapper class="bilibili-player-node">
     <div v-if="bvid" class="bp-node-card" title="双击重新配置" @dblclick="openDialog">
-      <div class="bp-node-card__cover">
-        <img v-if="coverSrc" :src="coverSrc" :alt="videoInfo?.title" @error="coverFailed = true" />
-        <RiBilibiliLine v-else class="bp-node-card__cover-icon" />
+      <div class="bp-node-card__cover" :class="{ 'bp-node-card__cover--loading': infoLoading }">
+        <template v-if="!infoLoading">
+          <img
+            v-if="coverSrc"
+            :src="coverSrc"
+            :alt="videoInfo?.title"
+            @error="coverFailed = true"
+          />
+          <div v-else class="bp-node-card__cover-fallback">
+            <RiBilibiliLine />
+          </div>
+        </template>
         <span class="bp-node-card__badge"><RiBilibiliLine />B站</span>
+        <span class="bp-node-card__play">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M8 5.14v14l11-7-11-7z" />
+          </svg>
+        </span>
       </div>
       <div class="bp-node-card__meta">
-        <div class="bp-node-card__title">{{ videoInfo?.title || bvid }}</div>
-        <div class="bp-node-card__up">UP 主：{{ videoInfo?.ownerName || '—' }}</div>
+        <template v-if="infoLoading">
+          <div class="bp-skeleton-bar" style="width: 70%"></div>
+          <div class="bp-skeleton-bar" style="width: 45%"></div>
+        </template>
+        <template v-else>
+          <div class="bp-node-card__title">{{ videoInfo?.title || bvid }}</div>
+          <div class="bp-node-card__sub">
+            <span>{{ videoInfo?.ownerName || '未知 UP 主' }}</span>
+            <template v-if="durationText">
+              <span class="bp-node-card__dot">&middot;</span>
+              <span>{{ durationText }}</span>
+            </template>
+            <span v-if="orientation" class="bp-node-card__ori">{{ orientation }}</span>
+          </div>
+          <div class="bp-node-card__bvid">{{ bvid }}</div>
+        </template>
       </div>
     </div>
-    <div v-else class="bp-node-placeholder" @click="openDialog">
+    <div v-else class="bp-node-placeholder" @dblclick="openDialog">
       <RiBilibiliLine class="bp-node-placeholder__icon" />
-      <span>B 站视频未配置，点击设置 BV 号</span>
+      <span>B站视频 · 双击配置</span>
     </div>
 
     <VModal
@@ -211,37 +249,38 @@ onMounted(() => {
 
 <style scoped>
 .bilibili-player-node {
-  border-radius: 4px;
-  overflow: hidden;
-}
-.bilibili-player-node--selected {
-  outline: 2px solid #fb7299;
-  outline-offset: 1px;
+  margin: 8px 0;
 }
 
+/* 已配置：紧凑横向信息卡（固定高度，不受视频宽高比影响） */
 .bp-node-card {
   display: flex;
   align-items: stretch;
-  gap: 12px;
-  height: 100%;
-  padding: 12px;
+  height: 110px;
   background: #fff;
   border: 1px solid rgb(234, 236, 240);
-  border-radius: 4px;
+  border-radius: 8px;
+  overflow: hidden;
   cursor: default;
   user-select: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
+.bp-node-card:hover {
+  border-color: rgba(251, 114, 153, 0.45);
+  box-shadow: 0 2px 10px rgba(251, 114, 153, 0.12);
+}
+
 .bp-node-card__cover {
   position: relative;
-  width: 160px;
+  width: 180px;
   flex-shrink: 0;
-  aspect-ratio: 16/10;
-  border-radius: 4px;
-  overflow: hidden;
   background: #f7f8fa;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+}
+.bp-node-card__cover--loading {
+  animation: bp-skeleton 1.4s ease-in-out infinite;
 }
 .bp-node-card__cover img {
   width: 100%;
@@ -249,30 +288,61 @@ onMounted(() => {
   object-fit: cover;
   display: block;
 }
-.bp-node-card__cover-icon {
-  font-size: 28px;
+.bp-node-card__cover-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
   color: #fb7299;
-  opacity: 0.5;
+  opacity: 0.45;
+  background: #f7f8fa;
 }
 .bp-node-card__badge {
   position: absolute;
-  left: 6px;
-  top: 6px;
+  right: 6px;
+  bottom: 6px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   padding: 2px 6px;
   font-size: 11px;
+  line-height: 1.4;
   color: #fff;
   background: rgba(251, 114, 153, 0.92);
   border-radius: 4px;
 }
+.bp-node-card__play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding-left: 2px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.bp-node-card:hover .bp-node-card__play {
+  opacity: 1;
+}
+
 .bp-node-card__meta {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 6px;
   min-width: 0;
-  justify-content: center;
+  flex: 1;
+  padding: 12px 16px;
 }
 .bp-node-card__title {
   font-size: 14px;
@@ -284,32 +354,72 @@ onMounted(() => {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.bp-node-card__up {
+.bp-node-card__sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: #86909c;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.bp-node-card__dot {
+  color: #c9cdd4;
+}
+.bp-node-card__ori {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: #fb7299;
+  border: 1px solid rgba(251, 114, 153, 0.4);
+  border-radius: 4px;
+}
+.bp-node-card__bvid {
+  font-size: 11px;
+  color: #c9cdd4;
+  font-family: 'JetBrains Mono', monospace;
 }
 
+/* 骨架屏 */
+.bp-skeleton-bar {
+  height: 14px;
+  border-radius: 4px;
+  background: rgb(234, 236, 240);
+  animation: bp-skeleton 1.4s ease-in-out infinite;
+}
+@keyframes bp-skeleton {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* 未配置：占位卡 */
 .bp-node-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 100%;
-  min-height: 72px;
+  height: 110px;
   font-size: 13px;
-  color: #86909c;
-  background: #f7f8fa;
+  color: rgb(100, 116, 139);
+  background: #fff;
   border: 1px dashed rgb(234, 236, 240);
-  border-radius: 4px;
-  cursor: pointer;
+  border-radius: 8px;
+  cursor: default;
   user-select: none;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 .bp-node-placeholder:hover {
   color: #fb7299;
-  border-color: #fb7299;
+  border-color: rgba(251, 114, 153, 0.45);
 }
 .bp-node-placeholder__icon {
-  font-size: 18px;
+  font-size: 24px;
 }
 
 .bp-dialog {
