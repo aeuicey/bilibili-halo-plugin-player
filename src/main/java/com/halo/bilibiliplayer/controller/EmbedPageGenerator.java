@@ -7,13 +7,14 @@ package com.halo.bilibiliplayer.controller;
  *  - 首次加载调一次 playurl（后端降级链）拿全量 DASH 轨，之后清晰度切换纯前端换轨；
  *    仅在 CDN 报错（疑似 403/过期）或距上次获取超过 110 分钟时才重新请求 API。
  *  - 流选择：按目标 qn 过滤，缺流时向 accept_quality 相邻更低档降级；同 qn 多编码时
- *    canPlayType 探测，优先级 avc1 > av01(probably) > hevc(probably)；同编码取带宽适中者；
- *    音频取最高 bandwidth 轨。
+ *    canPlayType 探测，优先级 avc1(非空) > av01(probably) > hevc(probably)，avc1 探测全失败
+ *    时仍作最后兜底；同编码取带宽适中者；音频取最高 bandwidth 轨。
  *  - 流分发：三级候选模式。smart（默认）= 浏览器直连（no-referrer）→ Cloudflare Worker
  *    代理（若已配置）→ 服务器代理兜底；worker = Worker → 服务器；server = 仅服务器代理。
  *    tier 优先，同 tier 内 baseUrl → backupUrl；video/audio 元素各自独立递进候选索引。
- *  - 解码回退：选流后 5s 内无 loadeddata/progress 判定解码失败 → 同 qn 换次优编码 →
- *    整档降 qn → 最终切 MP4 单文件模式（关闭 RAF 同步、移除隐藏 audio）。
+ *  - 解码回退：选流后 3s 内无 loadeddata/progress 判定解码失败 → 同 qn 换次优编码 →
+ *    整档降 qn → 最终切 MP4 单文件模式（关闭 RAF 同步、移除隐藏 audio）。失败编码按
+ *    bvid 持久化到 sessionStorage，iframe 重载后直接跳过，仅重取 playurl 时重置。
  *  - 音画同步：RAF ±0.15s 纠偏；audio stalled 或其 buffered 落后 video 超 1s 时暂停
  *    video 等 audio canplay 再恢复。
  *
@@ -74,7 +75,7 @@ public final class EmbedPageGenerator {
         h.append("var API='/plugins/bilibili-player/api';var BVID='").append(jsStr(bvid)).append("';var CID='").append(jsStr(cid)).append("';");
         h.append("var PROXY_MODE='").append(jsStr(proxyMode)).append("';var WORKER_BASE='").append(jsStr(workerUrl)).append("';var WORKER_TOKEN='").append(jsStr(workerToken)).append("';");
         h.append("var player=null,vEl=null,ps=null,aEl=null,rafId=0,usingDash=false,mp4Mode=false,switching=false;");
-        h.append("var playData=null,fetchedAt=0,curQn=0,curVTrack=null,curATrack=null,failedCodecs={};");
+        h.append("var playData=null,fetchedAt=0,curQn=0,curVTrack=null,curATrack=null,failedCodecs=loadFailed();");
         h.append("var vCands=[],vCandIdx=0,aCands=[],aCandIdx=0,mp4Cands=[],mp4CandIdx=0;");
         h.append("var loadWatchdog=0,decodeOk=false,waitingAudio=false,audioStalled=false,videoStalled=false,reloaded=false;");
         h.append("var qItemEl=null,qLabel=null,qPanel=null,qPopover=null;");
@@ -105,13 +106,16 @@ public final class EmbedPageGenerator {
         h.append("function destroyAudio(){if(rafId){cancelAnimationFrame(rafId);rafId=0}if(aEl){try{aEl.pause();aEl.removeAttribute('src');aEl.load();aEl.parentNode.removeChild(aEl)}catch(e){}aEl=null}usingDash=false;waitingAudio=false;audioStalled=false;videoStalled=false}");
 
         // —— 流选择工具 ——
+        // 解码失败编解码记录按 bvid 持久化到 sessionStorage：iframe 重载后直接跳过已知失败编码，不再吃看门狗罚时
+        h.append("function loadFailed(){try{return JSON.parse(sessionStorage.getItem('bp-fc-'+BVID)||'{}')}catch(e){return{}}}");
+        h.append("function saveFailed(){try{sessionStorage.setItem('bp-fc-'+BVID,JSON.stringify(failedCodecs))}catch(e){}}");
         h.append("function codecFamily(c){c=(c||'').toLowerCase();if(c.indexOf('avc1')===0)return 'avc1';if(c.indexOf('av01')===0)return 'av01';if(c.indexOf('hev1')===0||c.indexOf('hvc1')===0)return 'hevc';return 'other'}");
         h.append("function probe(t){try{var el=document.createElement('video');return el.canPlayType((t.mimeType||'video/mp4')+'; codecs=\"'+t.codecs+'\"')}catch(e){return ''}}");
         // 同编码多条码流取 bandwidth 适中者
         h.append("function pickModerate(list){list=list.slice().sort(function(a,b){return a.bandwidth-b.bandwidth});return list[Math.floor(list.length/2)]}");
         // 音频取最高 bandwidth 轨
         h.append("function pickAudioTrack(){if(!playData||!playData.dash)return null;var auds=playData.dash.audio||[];if(!auds.length)return null;var best=auds[0];for(var i=0;i<auds.length;i++){if(auds[i].bandwidth>best.bandwidth)best=auds[i]}return best}");
-        // 按目标 qn 过滤；qn 缺流时向 accept_quality 相邻更低档降级；编码优先级 avc1 > av01(probably) > hevc(probably)
+        // 按目标 qn 过滤；qn 缺流时向 accept_quality 相邻更低档降级；编码优先级 avc1(探测非空) > av01(probably) > hevc(probably)，avc1 探测全失败仍兜底
         h.append("function pickVideoTrack(qn){"
                 + "if(!playData||!playData.dash)return null;"
                 + "var vids=playData.dash.video||[];if(!vids.length)return null;"
@@ -121,18 +125,20 @@ public final class EmbedPageGenerator {
                 + "var failed=failedCodecs[qnUsed]||{};"
                 + "var avc=[],av1=[],hev=[],other=[];"
                 + "cands.forEach(function(t){var f=codecFamily(t.codecs);if(failed[f])return;if(f==='avc1')avc.push(t);else if(f==='av01')av1.push(t);else if(f==='hevc')hev.push(t);else other.push(t)});"
-                + "if(avc.length)return{track:pickModerate(avc),qnUsed:qnUsed};"
+                + "var avcok=avc.filter(function(t){return probe(t)!==''});if(avcok.length)return{track:pickModerate(avcok),qnUsed:qnUsed};"
                 + "var av1ok=av1.filter(function(t){return probe(t)==='probably'});if(av1ok.length)return{track:pickModerate(av1ok),qnUsed:qnUsed};"
                 + "var hevok=hev.filter(function(t){return probe(t)==='probably'});if(hevok.length)return{track:pickModerate(hevok),qnUsed:qnUsed};"
+                + "if(avc.length)return{track:pickModerate(avc),qnUsed:qnUsed};"
                 + "return null}");
 
         // —— 数据获取：首次拿全量 DASH 列表，之后清晰度切换纯前端换轨；仅强制/过期才重取 ——
         h.append("async function ensureData(force){"
                 + "if(force||!playData||(Date.now()-fetchedAt>RELOAD_MS)){"
-                + "tl('fetch',force?'force':(playData?'expire':'init'));"
+                + "tl('fetch',force?'force':(playData?'expire':'init'));var init0=!playData;"
                 + "var r=await fetch(API+'/video/playurl?bvid='+BVID+'&cid='+CID);var d=await r.json();"
                 + "if(d.error)throw new Error(d.error);"
-                + "playData=d;fetchedAt=Date.now();failedCodecs={};updateResMenu();"
+                // 重取后清空失败编码记录（新 CDN 地址可能已恢复），但首次加载保留 sessionStorage 恢复的记录
+                + "playData=d;fetchedAt=Date.now();if(!init0){failedCodecs={};saveFailed()}updateResMenu();"
                 + "tl('fetched','strategy='+(d.strategy||'?')+' quality='+d.quality+' vTracks='+(d.dash&&d.dash.video?d.dash.video.length:0));"
                 + "}}");
 
@@ -162,7 +168,7 @@ public final class EmbedPageGenerator {
                 + "vCands=candidates([vT.baseUrl,vT.backupUrl||'']);vCandIdx=0;"
                 + "aCands=candidates([aT.baseUrl,aT.backupUrl||'']);aCandIdx=0;"
                 + "try{vEl.pause()}catch(e){}"
-                + "vEl.removeAttribute('src');vEl.load();vEl.src=vCands[0];vEl.load();"
+                + "vEl.removeAttribute('src');vEl.load();vEl.src=vCands[0];"
                 + "aEl=document.createElement('audio');aEl.style.display='none';aEl.preload='auto';"
                 + "aEl.addEventListener('error',function(){handleMediaError('a')});"
                 + "aEl.addEventListener('waiting',function(){audioStalled=true});"
@@ -180,15 +186,15 @@ public final class EmbedPageGenerator {
 
         h.append("function resumeFromWait(){if(!waitingAudio)return;waitingAudio=false;if(vEl&&vEl.paused&&!vEl.ended){var p=vEl.play();if(p&&p.catch)p.catch(function(){})}tl('syncResume','')}");
 
-        // 解码失败看门狗：选流后 5s 内无 loadeddata/progress 判定解码失败
-        h.append("function armWatchdog(){clearWatchdog();loadWatchdog=setTimeout(function(){if(decodeOk||mp4Mode)return;if(vEl&&vEl.readyState>=2){decodeOk=true;return}onDecodeFail()},5000)}");
+        // 解码失败看门狗：选流后 3s 内无 loadeddata/progress 判定解码失败
+        h.append("function armWatchdog(){clearWatchdog();loadWatchdog=setTimeout(function(){if(decodeOk||mp4Mode)return;if(vEl&&vEl.readyState>=2){decodeOk=true;return}onDecodeFail()},3000)}");
         h.append("function clearWatchdog(){if(loadWatchdog){clearTimeout(loadWatchdog);loadWatchdog=0}}");
 
         // 解码回退链：同 qn 换次优编码 → 整档降 qn → MP4 单文件模式
         h.append("function onDecodeFail(){"
                 + "if(mp4Mode||!curVTrack)return;"
                 + "var qn=curVTrack.id,fam=codecFamily(curVTrack.codecs);"
-                + "if(!failedCodecs[qn])failedCodecs[qn]={};failedCodecs[qn][fam]=true;"
+                + "if(!failedCodecs[qn])failedCodecs[qn]={};failedCodecs[qn][fam]=true;saveFailed();"
                 + "tl('decodeFail','qn='+qn+' codec='+curVTrack.codecs);"
                 + "var p=pickVideoTrack(qn);"
                 + "if(p){tl('fallback','sameQn codec='+p.track.codecs);applyPicked(p);return}"
@@ -210,7 +216,7 @@ public final class EmbedPageGenerator {
                 + "destroyAudio();clearWatchdog();"
                 + "mp4Mode=true;mp4Cands=candidates([url,backup||'']);mp4CandIdx=0;"
                 + "try{vEl.pause()}catch(e){}"
-                + "vEl.removeAttribute('src');vEl.load();vEl.src=mp4Cands[0];vEl.load();"
+                + "vEl.removeAttribute('src');vEl.load();vEl.src=mp4Cands[0];"
                 + "tl('mp4',url.substring(0,60));"
                 + "var p=vEl.play();if(p&&p.catch)p.catch(function(e){if(e.name!=='AbortError')tl('playErr',e.name)});"
                 + "try{setQualityLabel('MP4')}catch(e){}}");
