@@ -39,6 +39,19 @@ export default {
       return new Response('forbidden', { status: 403 })
     }
 
+    // 预热模式：回源填充边缘缓存的 2MB 块但不回传正文（不占客户端带宽），返回 {total}
+    if (reqUrl.searchParams.get('warm')) {
+      const idx = Number(reqUrl.searchParams.get('block') || 0)
+      if (!Number.isInteger(idx) || idx < 0) {
+        return new Response('bad block', { status: 400, headers: corsHeaders() })
+      }
+      const hash = await urlHash(t.toString())
+      const { total } = await getBlock(t.toString(), hash, idx, ctx)
+      const headers = corsHeaders()
+      headers.set('Content-Type', 'application/json')
+      return new Response(JSON.stringify({ total }), { headers })
+    }
+
     const range = request.headers.get('Range')
     try {
       if (range) return await handleRange(t.toString(), range, ctx)
