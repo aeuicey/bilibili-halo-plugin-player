@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml/badge.svg)](https://github.com/aeuicey/bilibili-halo-plugin-player/actions/workflows/build.yml)
 
-为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B 站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例、智能省流分发。
+为 [Halo](https://github.com/halo-dev/halo) 博客系统提供 B 站视频播放器嵌入插件，支持扫码登录获取高清晰度、DASH 音视频分离播放、多清晰度动态切换、分辨率自适应画幅比例、多渠道流分发。
 
 <img width="1653" height="1003" alt="image" src="https://github.com/user-attachments/assets/00635f57-3a9c-4303-b5d1-8b55a3098150" />
 <img width="1416" height="676" alt="image" src="https://github.com/user-attachments/assets/ee8a142a-2856-4f5d-8ee7-f8aed3e3320c" />
@@ -13,7 +13,7 @@
 - **扫码登录** — 管理后台生成 B 站登录二维码，扫码授权后自动持久化登录状态，解锁 1080P 及以上清晰度（4K 需大会员）
 - **多清晰度支持** — 360P ~ 8K，播放页内一键切换，切换不中断播放进度
 - **DASH 音画分离播放** — `<video>` + 隐藏 `<audio>` 双元素逐帧同步，零外部依赖
-- **智能省流** — 三级流分发：浏览器直连 → Cloudflare Worker 代理 → 服务器代理兜底，观众播放不再只消耗服务器带宽
+- **流分发** — 三级渠道：浏览器直连 → Cloudflare Worker 代理 → 服务器代理，直连与服务器代理默认关闭、按需在设置中开启，按需组合节省服务器带宽
 - **播放容错** — CDN 多地址回退、解码失败自动换编码/降清晰度、DASH 失败自动切 MP4 单文件
 - **分辨率自适应** — 自动识别横屏/竖屏/方形视频，嵌入代码与播放器同步画幅比例
 - **编辑器集成** — 文章编辑器工具箱/斜杠命令直接插入 B 站视频块，可视化配置 BV 号与分 P
@@ -23,7 +23,7 @@
 
 - **视频解析**：WBI 签名调用 B 站 playurl 接口，四级降级链（全量 DASH → 基础 DASH → MP4 → html5 免鉴权兜底），视频信息接口带风控回退
 - **播放**：服务端生成自包含嵌入页（Video.js + DASH 双元素同步），一次拉流、前端本地换轨
-- **分发**：流地址候选链自动降级，默认直连 B 站 CDN，不占服务器带宽
+- **分发**：流地址候选链自动降级，直连与服务器代理默认关闭、在设置中手动开启，推荐配置 Worker 不消耗服务器带宽
 
 完整技术细节（解析机制、流选择算法、同步原理、容错链）见 **[docs/TECH.md](./docs/TECH.md)**；与 Halo 官方编辑器集成的调研见 **[docs/EDITOR-INTEGRATION.md](./docs/EDITOR-INTEGRATION.md)**。
 
@@ -46,8 +46,10 @@
 ### 2. 配置流分发（可选，推荐）
 
 - 插件管理 → 点击「BiliBili播放器」→ **设置**页签
-- **流分发模式**：默认 `smart`（直连优先，自动降级）；直连不可用时切 `worker`；`server` 为全部走服务器中转的保守模式
-- 已部署 Cloudflare Worker 代理时，填写 **Worker 地址**（和访问令牌，若在 Worker 端配置了的话）
+- **允许浏览器直连 B 站 CDN**：默认关闭；开启后观众浏览器直接向 B 站 CDN 拉流，不消耗服务器带宽
+- **允许服务器代理**：默认关闭；开启后视频流经本服务器中转，稳定但消耗服务器带宽
+- 已部署 Cloudflare Worker 代理时，填写 **Worker 地址**（和访问令牌，若在 Worker 端配置了的话）即自动启用该通道
+- 至少开启一个渠道（或配置 Worker），否则播放页会提示「未启用任何流分发渠道」
 
 ### 3. 在文章编辑器中插入视频（推荐）
 
@@ -112,7 +114,7 @@ GitHub Actions 在每次推送时自动构建（JDK 21 + Node 20 + pnpm），产
 
 ### 部署 Cloudflare Worker 代理（可选）
 
-用于「智能省流」的第二级分发，观众播放流量经 CF 边缘节点而非你的服务器：
+用于 Worker 流分发通道，观众播放流量经 CF 边缘节点而非你的服务器：
 
 1. 复制 [`workers/bili-proxy.js`](./workers/bili-proxy.js) 到 Cloudflare Dashboard → Workers → 新建 Worker 的编辑器中，部署
 2. （可选）在 Worker 设置中添加密钥变量 `PROXY_TOKEN` 防止被当开放代理滥用

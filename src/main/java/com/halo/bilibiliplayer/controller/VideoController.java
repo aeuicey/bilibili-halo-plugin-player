@@ -201,24 +201,21 @@ public class VideoController {
         });
     }
 
-    /** 三级流分发配置：smart（直连→Worker→服务器）/ worker（Worker→服务器）/ server（仅服务器） */
-    private record StreamProxyConfig(String proxyMode, String workerUrl, String workerToken) {
-        static final StreamProxyConfig DEFAULT = new StreamProxyConfig("smart", "", "");
+    /** 三级流分发配置：直连/服务器代理默认关闭需手动开启；Worker 填写地址即启用 */
+    private record StreamProxyConfig(boolean enableDirect, boolean enableServer,
+                                     String workerUrl, String workerToken) {
+        static final StreamProxyConfig DEFAULT = new StreamProxyConfig(false, false, "", "");
     }
 
-    /** 读取播放设置；setting 不存在或字段缺失时回退 smart、无 Worker；非法 Worker 地址按未配置处理 */
+    /** 读取播放设置；setting 不存在或字段缺失时回退全关、无 Worker；非法 Worker 地址按未配置处理 */
     private StreamProxyConfig readProxyConfig(JsonNode setting) {
-        String mode = "smart";
+        boolean enableDirect = false;
+        boolean enableServer = false;
         String workerUrl = "";
         String workerToken = "";
         if (setting != null && !setting.isMissingNode() && !setting.isNull()) {
-            JsonNode m = setting.path("proxyMode");
-            if (m.isString()) {
-                String v = m.asString();
-                if (v.equals("smart") || v.equals("worker") || v.equals("server")) {
-                    mode = v;
-                }
-            }
+            enableDirect = setting.path("enableDirect").asBoolean(false);
+            enableServer = setting.path("enableServer").asBoolean(false);
             JsonNode u = setting.path("workerUrl");
             if (u.isString()) workerUrl = u.asString().trim();
             JsonNode t = setting.path("workerToken");
@@ -241,7 +238,7 @@ public class VideoController {
                 workerUrl = "";
             }
         }
-        return new StreamProxyConfig(mode, workerUrl, workerToken);
+        return new StreamProxyConfig(enableDirect, enableServer, workerUrl, workerToken);
     }
 
     @GetMapping(value = "/plugins/bilibili-player/embed", produces = MediaType.TEXT_HTML_VALUE)
@@ -250,10 +247,11 @@ public class VideoController {
                 .map(this::readProxyConfig)
                 .switchIfEmpty(Mono.just(StreamProxyConfig.DEFAULT))
                 .onErrorResume(e -> {
-                    logService.warn("[settings] 读取播放设置失败，回退默认 smart 模式: {}", e.getMessage());
+                    logService.warn("[settings] 读取播放设置失败，回退默认（直连/服务器代理均关闭）: {}", e.getMessage());
                     return Mono.just(StreamProxyConfig.DEFAULT);
                 })
                 .map(cfg -> ResponseEntity.ok().cacheControl(CacheControl.noCache())
-                        .body(EmbedPageGenerator.build(bvid, cid, cfg.proxyMode(), cfg.workerUrl(), cfg.workerToken())));
+                        .body(EmbedPageGenerator.build(bvid, cid,
+                                cfg.enableDirect(), cfg.enableServer(), cfg.workerUrl(), cfg.workerToken())));
     }
 }

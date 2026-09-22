@@ -10,9 +10,10 @@ package com.halo.bilibiliplayer.controller;
  *  - 流选择：按目标 qn 过滤，缺流时向 accept_quality 相邻更低档降级；同 qn 多编码时
  *    canPlayType 探测，优先级 avc1(非空) > av01(probably) > hevc(probably)，avc1 探测全失败
  *    时仍作最后兜底；同编码取带宽适中者；音频取最高 bandwidth 轨。
- *  - 流分发：三级候选模式。smart（默认）= 浏览器直连（no-referrer）→ Cloudflare Worker
- *    代理（若已配置）→ 服务器代理兜底；worker = Worker → 服务器；server = 仅服务器代理。
- *    tier 优先，同 tier 内 baseUrl → backupUrl；video/audio 元素各自独立递进候选索引。
+ *  - 流分发：三级候选渠道，直连/服务器代理默认关闭、需在插件设置中手动开启；Worker
+ *    填写地址即启用。开启的渠道按 浏览器直连（no-referrer）→ Cloudflare Worker →
+ *    服务器代理 的顺序排列；tier 优先，同 tier 内 baseUrl → backupUrl；video/audio
+ *    元素各自独立递进候选索引。全部渠道未开启时提示去设置页开启。
  *  - 解码回退：选流后 3s 内无 loadeddata/progress 判定解码失败 → 同 qn 换次优编码 →
  *    整档降 qn → 最终切 MP4 单文件模式（关闭 RAF 同步、移除隐藏 audio）。失败编码按
  *    bvid 持久化到 sessionStorage，iframe 重载后直接跳过，仅重取 playurl 时重置。
@@ -35,7 +36,8 @@ public final class EmbedPageGenerator {
                 .replace("</", "<\\/");
     }
 
-    public static String build(String bvid, String cid, String proxyMode, String workerUrl, String workerToken) {
+    public static String build(String bvid, String cid, boolean enableDirect, boolean enableServer,
+                               String workerUrl, String workerToken) {
         StringBuilder h = new StringBuilder();
         h.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">");
         h.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
@@ -74,7 +76,7 @@ public final class EmbedPageGenerator {
         h.append("<button id=\"unmuteBtn\" class=\"unmute-hint\" type=\"button\">🔊 点击解除静音</button></div>");
         h.append("<script>");
         h.append("var API='/plugins/bilibili-player/api';var BVID='").append(jsStr(bvid)).append("';var CID='").append(jsStr(cid)).append("';");
-        h.append("var PROXY_MODE='").append(jsStr(proxyMode)).append("';var WORKER_BASE='").append(jsStr(workerUrl)).append("';var WORKER_TOKEN='").append(jsStr(workerToken)).append("';");
+        h.append("var DIRECT_OK=").append(enableDirect).append(";var SERVER_OK=").append(enableServer).append(";var WORKER_BASE='").append(jsStr(workerUrl)).append("';var WORKER_TOKEN='").append(jsStr(workerToken)).append("';");
         h.append("var player=null,vEl=null,ps=null,aEl=null,rafId=0,usingDash=false,mp4Mode=false,switching=false;");
         h.append("var playData=null,fetchedAt=0,curQn=0,curVTrack=null,curATrack=null,failedCodecs=loadFailed();");
         h.append("var vCands=[],vCandIdx=0,aCands=[],aCandIdx=0,mp4Cands=[],mp4CandIdx=0;");
@@ -90,15 +92,14 @@ public final class EmbedPageGenerator {
 
         h.append("function getRefPage(){try{if(window.parent&&window.parent!==window&&window.parent.location&&window.parent.location.href)return window.parent.location.href}catch(e){}return document.referrer||''}");
         h.append("function tl(e,d){var u=API+'/player/log?event='+encodeURIComponent(e)+'&bvid='+BVID+'&cid='+CID+'&detail='+encodeURIComponent(d||'')+'&page='+encodeURIComponent(getRefPage());fetch(u,{keepalive:true,mode:'no-cors'}).catch(function(){})}");
-        // 三级流分发：按 PROXY_MODE 产出有序候选 URL 数组（tier 优先，同 tier 内 baseUrl→backupUrl）
-        //   smart: direct(baseUrl,backupUrl) → worker(…,仅已配置) → server(…,兜底)
-        //   worker: worker → server；server: 仅服务器代理
+        // 三级流分发：按设置产出有序候选 URL 数组（tier 优先，同 tier 内 baseUrl→backupUrl）
+        //   直连/服务器代理默认关闭，需在插件设置中手动开启；Worker 填写地址即启用
         h.append("function candidates(rawUrls){var b=rawUrls[0]||'',bk=rawUrls[1]||'',out=[];if(bk===b)bk='';"
                 + "function tier(fn){if(b)out.push(fn(b));if(bk)out.push(fn(bk))}"
                 + "var direct=function(u){return u};"
                 + "var worker=function(u){return WORKER_BASE+'?url='+encodeURIComponent(u)+(WORKER_TOKEN?'&token='+encodeURIComponent(WORKER_TOKEN):'')};"
                 + "var server=function(u){return API+'/video/proxy?url='+encodeURIComponent(u)};"
-                + "if(PROXY_MODE==='server'){tier(server)}else{if(PROXY_MODE!=='worker')tier(direct);if(WORKER_BASE)tier(worker);tier(server)}"
+                + "if(DIRECT_OK)tier(direct);if(WORKER_BASE)tier(worker);if(SERVER_OK)tier(server);"
                 + "return out}");
         h.append("function tierOf(u){if(WORKER_BASE&&u.indexOf(WORKER_BASE)===0)return 'worker';if(u.indexOf(API+'/video/proxy')===0)return 'server';return 'direct'}");
         h.append("function se(m){var er=document.getElementById('er');er.style.display='flex';er.textContent=m}");
@@ -169,6 +170,7 @@ public final class EmbedPageGenerator {
                 + "destroyAudio();clearWatchdog();switching=true;"
                 + "curVTrack=vT;curATrack=aT;decodeOk=false;"
                 + "vCands=candidates([vT.baseUrl,vT.backupUrl||'']);vCandIdx=0;"
+                + "if(!vCands.length){switching=false;se('未启用任何流分发渠道：请在插件设置中开启直连/服务器代理，或配置 Worker 地址');tl('noTier','');return}"
                 + "aCands=candidates([aT.baseUrl,aT.backupUrl||'']);aCandIdx=0;"
                 + "try{vEl.pause()}catch(e){}"
                 + "vEl.removeAttribute('src');vEl.load();vEl.src=vCands[0];"
@@ -218,6 +220,7 @@ public final class EmbedPageGenerator {
         h.append("function playMp4(url,backup){"
                 + "destroyAudio();clearWatchdog();"
                 + "mp4Mode=true;mp4Cands=candidates([url,backup||'']);mp4CandIdx=0;"
+                + "if(!mp4Cands.length){mp4Mode=false;se('未启用任何流分发渠道：请在插件设置中开启直连/服务器代理，或配置 Worker 地址');tl('noTier','');return}"
                 + "try{vEl.pause()}catch(e){}"
                 + "vEl.removeAttribute('src');vEl.load();vEl.src=mp4Cands[0];"
                 + "tl('mp4',url.substring(0,60));"

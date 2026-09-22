@@ -7,22 +7,20 @@ spec:
     - group: basic
       label: 播放设置
       formSchema:
-        - $formkit: select
-          name: proxyMode
-          label: 流分发模式
-          help: 决定观众播放视频时流地址的获取顺序，用于节省服务器带宽
-          value: smart
-          options:
-            - label: 智能省流（直连优先，自动降级）
-              value: smart
-            - label: Worker 代理优先
-              value: worker
-            - label: 始终服务器代理
-              value: server
+        - $formkit: checkbox
+          name: enableDirect
+          label: 允许浏览器直连 B 站 CDN
+          help: 观众浏览器直接向 B 站 CDN 拉流，不消耗服务器带宽；默认关闭，需要时手动开启
+          value: false
+        - $formkit: checkbox
+          name: enableServer
+          label: 允许服务器代理
+          help: 视频流经本服务器中转，稳定但消耗服务器带宽；默认关闭，需要时手动开启
+          value: false
         - $formkit: text
           name: workerUrl
           label: Cloudflare Worker 代理地址
-          help: 部署的 Worker 完整地址，留空表示未配置
+          help: 部署的 Worker 完整地址，留空表示未配置；填写后 Worker 通道自动启用（直连与服务器代理之间）
           placeholder: https://bili-proxy.example.com
         - $formkit: password
           name: workerToken
