@@ -4,8 +4,9 @@ package com.halo.bilibiliplayer.controller;
  * 生成 embed 内联播放页 HTML（nplayer + DASH 音画分离双元素 RAF 同步架构）。
  *
  * 播放器策略（对齐 B 站 Web 端）：
- *  - 首次加载调一次 playurl（后端降级链）拿全量 DASH 轨，之后清晰度切换纯前端换轨；
- *    仅在 CDN 报错（疑似 403/过期）或距上次获取超过 110 分钟时才重新请求 API。
+ *  - 首次加载调一次 playurl（后端降级链）拿全量 DASH 轨并写入 sessionStorage（iframe
+ *    重载后命中缓存免重取），之后清晰度切换纯前端换轨；仅在 CDN 报错（疑似 403/过期）
+ *    或距上次获取超过 110 分钟时才重新请求 API。
  *  - 流选择：按目标 qn 过滤，缺流时向 accept_quality 相邻更低档降级；同 qn 多编码时
  *    canPlayType 探测，优先级 avc1(非空) > av01(probably) > hevc(probably)，avc1 探测全失败
  *    时仍作最后兜底；同编码取带宽适中者；音频取最高 bandwidth 轨。
@@ -131,14 +132,16 @@ public final class EmbedPageGenerator {
                 + "if(avc.length)return{track:pickModerate(avc),qnUsed:qnUsed};"
                 + "return null}");
 
-        // —— 数据获取：首次拿全量 DASH 列表，之后清晰度切换纯前端换轨；仅强制/过期才重取 ——
+        // —— 数据获取：playData 按 bvid+cid 持久化到 sessionStorage（iframe 重载后命中缓存免重取）；
+        //    之后清晰度切换纯前端换轨；仅强制/过期才重取 API ——
         h.append("async function ensureData(force){"
+                + "if(!force&&!playData){try{var c=JSON.parse(sessionStorage.getItem('bp-pd-'+BVID+'-'+CID)||'null');if(c&&c.d&&(Date.now()-c.t<=RELOAD_MS)){playData=c.d;fetchedAt=c.t;updateResMenu();tl('fetched','strategy=cache quality='+(playData.quality||'?'))}}catch(e){}}"
                 + "if(force||!playData||(Date.now()-fetchedAt>RELOAD_MS)){"
                 + "tl('fetch',force?'force':(playData?'expire':'init'));var init0=!playData;"
                 + "var r=await fetch(API+'/video/playurl?bvid='+BVID+'&cid='+CID);var d=await r.json();"
                 + "if(d.error)throw new Error(d.error);"
                 // 重取后清空失败编码记录（新 CDN 地址可能已恢复），但首次加载保留 sessionStorage 恢复的记录
-                + "playData=d;fetchedAt=Date.now();if(!init0){failedCodecs={};saveFailed()}updateResMenu();"
+                + "playData=d;fetchedAt=Date.now();if(!init0){failedCodecs={};saveFailed()}try{sessionStorage.setItem('bp-pd-'+BVID+'-'+CID,JSON.stringify({t:fetchedAt,d:d}))}catch(e){}updateResMenu();"
                 + "tl('fetched','strategy='+(d.strategy||'?')+' quality='+d.quality+' vTracks='+(d.dash&&d.dash.video?d.dash.video.length:0));"
                 + "}}");
 

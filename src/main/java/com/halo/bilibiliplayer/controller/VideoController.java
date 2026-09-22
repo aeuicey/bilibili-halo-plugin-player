@@ -10,6 +10,8 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SynchronousSink;
+import reactor.core.scheduler.Schedulers;
 import run.halo.app.plugin.ReactiveSettingFetcher;
 import tools.jackson.databind.JsonNode;
 
@@ -166,9 +168,11 @@ public class VideoController {
             if (status >= 300) return ResponseEntity.status(status).headers(headers).body(Flux.<DataBuffer>empty());
 
             InputStream inputStream = response.body();
+            // 阻塞式 InputStream.read 必须离开事件循环线程，否则音视频两路代理流会
+            // 占满事件循环，吞吐崩溃导致播放缓冲跟不上
             Flux<DataBuffer> flux = Flux.generate(
                 () -> inputStream,
-                (stream, sink) -> {
+                (InputStream stream, SynchronousSink<DataBuffer> sink) -> {
                     try {
                         byte[] buf = new byte[65536];
                         int n = stream.read(buf);
@@ -189,9 +193,9 @@ public class VideoController {
                     return stream;
                 },
                 stream -> { try { stream.close(); } catch (Exception ignored) {} }
-            );
+            ).subscribeOn(Schedulers.boundedElastic());
             return ResponseEntity.status(status).headers(headers).body(flux);
-        }).onErrorResume(e -> {
+        }).subscribeOn(Schedulers.boundedElastic()).onErrorResume(e -> {
             logService.debug("Proxy error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             return Mono.just(ResponseEntity.status(500).body(Flux.<DataBuffer>empty()));
         });
